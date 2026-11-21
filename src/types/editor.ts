@@ -304,7 +304,9 @@ export interface ToolOptions {
   healHardness: number; // 0..100
   snapToGuides: boolean;
   moveAutoSelect: boolean;
-  cropAspect: 'free' | '1:1' | '4:3' | '16:9' | '3:2' | '4:5';
+  cropAspect: 'free' | '1:1' | '4:3' | '16:9' | '3:2' | '4:5' | 'custom';
+  /** Width ÷ height used when cropAspect is 'custom'. */
+  cropCustomRatio: number;
   shapeKind: ShapeKind;
   shapeFill: string;
   shapeFillEnabled: boolean;

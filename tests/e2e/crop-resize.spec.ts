@@ -83,4 +83,25 @@ test.describe('Crop & resize', () => {
     await evidence(page, testInfo, 'resized-document');
     expect(errors).toEqual([]);
   });
+
+  test('custom crop ratio is applied and can be swapped', async ({ page }) => {
+    const errors = collectPageErrors(page);
+    await createBlankProject(page, { background: 'White' });
+    await blurActive(page);
+    await page.keyboard.press('c');
+
+    const ratio = page.getByRole('textbox', { name: 'Custom crop ratio' });
+    await ratio.fill('2:1');
+    await ratio.press('Enter');
+    const size = page.locator('span.font-mono-tabular').filter({ hasText: /^\d+ × \d+$/ });
+    const read = async () => {
+      const [w, h] = (await size.innerText()).split('×').map((n) => Number(n.trim()));
+      return w / h;
+    };
+    expect(Math.abs((await read()) - 2)).toBeLessThan(0.02);
+
+    await page.getByRole('button', { name: 'Swap landscape / portrait' }).click();
+    expect(Math.abs((await read()) - 0.5)).toBeLessThan(0.02);
+    expect(errors).toEqual([]);
+  });
 });

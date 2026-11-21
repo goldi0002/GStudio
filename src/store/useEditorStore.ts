@@ -395,6 +395,18 @@ function withActiveDocMutation(
   scheduleAutosave(updated.id, get, set);
 }
 
+async function writeCanvasToSystemClipboard(canvas: HTMLCanvasElement): Promise<boolean> {
+  try {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') return false;
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+    if (!blob) return false;
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function defaultCropForDoc(doc: DocumentState): CropRect {
   return { x: 0, y: 0, width: doc.width, height: doc.height };
 }
@@ -430,6 +442,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     snapToGuides: true,
     moveAutoSelect: true,
     cropAspect: 'free',
+    cropCustomRatio: 1.5,
     shapeKind: 'rounded-rect',
     shapeFill: '#0A84FF',
     shapeFillEnabled: true,
@@ -2012,7 +2025,12 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       canvas: clipCanvas,
     };
     set({ clipboardLayer: mergedLayer, preferInternalClipboard: true });
-    get().showToast('Copied merged composite', 'info');
+    // Also hand the pixels to the OS clipboard so they can be pasted into other apps.
+    // Best effort: unsupported browsers and denied permissions keep the in-app copy.
+    const toast = get().showToast;
+    void writeCanvasToSystemClipboard(clipCanvas).then((ok) =>
+      toast(ok ? 'Copied merged composite to clipboard' : 'Copied merged composite', 'info')
+    );
   },
 
   cutActiveLayer: () => {
