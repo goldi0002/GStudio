@@ -488,6 +488,61 @@ function maskFactors(mask: LayerMask, w: number, h: number): Float32Array {
   return out;
 }
 
+interface AdjustmentCacheEntry {
+  adjustments: Adjustments;
+  width: number;
+  height: number;
+  hash: number;
+  output: Uint8ClampedArray;
+}
+
+const ADJUSTMENT_CACHE_LIMIT = 3;
+const adjustmentCache = new Map<string, AdjustmentCacheEntry>();
+
+/** Fast FNV-1a style hash over 32-bit words; far cheaper than re-running the adjustment pipeline. */
+export function hashPixels(data: Uint8ClampedArray): number {
+  const words = new Uint32Array(data.buffer, data.byteOffset, data.byteLength >> 2);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < words.length; i++) {
+    h = Math.imul(h ^ words[i], 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/**
+ * Returns the adjusted pixels for an adjustment layer, reusing the previous result when neither the
+ * layer's adjustments nor the pixels underneath changed (e.g. painting on a layer above it).
+ */
+function getAdjustedPixels(
+  layer: AdjustmentLayer,
+  src: Uint8ClampedArray,
+  width: number,
+  height: number
+): Uint8ClampedArray {
+  const hash = hashPixels(src);
+  const hit = adjustmentCache.get(layer.id);
+  if (
+    hit &&
+    hit.adjustments === layer.adjustments &&
+    hit.width === width &&
+    hit.height === height &&
+    hit.hash === hash
+  ) {
+    adjustmentCache.delete(layer.id);
+    adjustmentCache.set(layer.id, hit); // refresh LRU position
+    return hit.output;
+  }
+  const output = applyAdjustmentsToBuffer(src, width, height, layer.adjustments);
+  adjustmentCache.delete(layer.id);
+  adjustmentCache.set(layer.id, { adjustments: layer.adjustments, width, height, hash, output });
+  while (adjustmentCache.size > ADJUSTMENT_CACHE_LIMIT) {
+    const oldest = adjustmentCache.keys().next().value;
+    if (oldest === undefined) break;
+    adjustmentCache.delete(oldest);
+  }
+  return output;
+}
+
 /**
  * Applies an adjustment layer to whatever has been drawn on `ctx` so far.
  * Normal blend mode lerps original -> adjusted per pixel by mask * opacity (exact, no alpha doubling);
@@ -503,7 +558,7 @@ function renderAdjustmentLayerToContext(
   if (opacity <= 0 || isDefaultAdjustments(layer.adjustments)) return;
 
   const src = ctx.getImageData(0, 0, docW, docH);
-  const adjusted = applyAdjustmentsToBuffer(src.data, docW, docH, layer.adjustments);
+  const adjusted = getAdjustedPixels(layer, src.data, docW, docH);
   const factors = layer.mask && layer.mask.enabled ? maskFactors(layer.mask, docW, docH) : null;
 
   if (layer.blendMode === 'normal') {
@@ -550,14 +605,15 @@ export function renderLayerNodeToContext(
   allLayers: Layer[],
   docW: number,
   docH: number,
-  visited = new Set<string>()
+  visited = new Set<string>(),
+  skipAdjustmentLayers = false
 ): void {
   if (!layer.visible || layer.opacity <= 0) return;
   if (visited.has(layer.id)) return;
   visited.add(layer.id);
 
   if (layer.type === 'adjustment') {
-    renderAdjustmentLayerToContext(ctx, layer, docW, docH);
+    if (!skipAdjustmentLayers) renderAdjustmentLayerToContext(ctx, layer, docW, docH);
     return;
   }
 
@@ -571,7 +627,7 @@ export function renderLayerNodeToContext(
     if (!gctx) return;
 
     for (const child of children) {
-      renderLayerNodeToContext(gctx, child, allLayers, docW, docH, visited);
+      renderLayerNodeToContext(gctx, child, allLayers, docW, docH, visited, skipAdjustmentLayers);
     }
 
     if (layer.mask && layer.mask.enabled) {
@@ -697,7 +753,8 @@ export function compositeLayersToCanvas(
   height: number,
   backgroundColor: string,
   layers: Layer[],
-  adjustments?: Adjustments
+  adjustments?: Adjustments,
+  skipAdjustmentLayers = false
 ): HTMLCanvasElement {
   const out = createCanvas(width, height);
   const ctx = out.getContext('2d', { willReadFrequently: true });
@@ -713,7 +770,7 @@ export function compositeLayersToCanvas(
   const topLevel = layers.filter((l) => !l.parentId || !layerIds.has(l.parentId));
 
   for (const layer of topLevel) {
-    renderLayerNodeToContext(ctx, layer, layers, width, height, visited);
+    renderLayerNodeToContext(ctx, layer, layers, width, height, visited, skipAdjustmentLayers);
   }
 
   if (adjustments && !isDefaultAdjustments(adjustments)) {
