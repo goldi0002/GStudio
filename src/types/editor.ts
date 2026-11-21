@@ -33,7 +33,7 @@ export type BlendMode =
 
 export type ShapeKind = 'rect' | 'rounded-rect' | 'ellipse' | 'line';
 
-export type LayerType = 'raster' | 'text' | 'shape' | 'group';
+export type LayerType = 'raster' | 'text' | 'shape' | 'group' | 'adjustment';
 
 export interface LayerMask {
   canvas: HTMLCanvasElement;
@@ -154,7 +154,18 @@ export interface GroupLayer extends BaseLayer {
   expanded: boolean;
 }
 
-export type Layer = RasterLayer | TextLayer | ShapeLayer | GroupLayer;
+/**
+ * Non-destructive adjustment layer. It has no pixels of its own: it applies its
+ * `adjustments` to everything composited beneath it (within its group, or the whole
+ * document when at the root), then blends the result back using its mask, opacity
+ * and blend mode. Geometry fields are kept doc-sized and otherwise ignored.
+ */
+export interface AdjustmentLayer extends BaseLayer {
+  type: 'adjustment';
+  adjustments: Adjustments;
+}
+
+export type Layer = RasterLayer | TextLayer | ShapeLayer | GroupLayer | AdjustmentLayer;
 
 export interface CurvePoint {
   x: number; // 0..255
@@ -246,6 +257,7 @@ export interface HistoryLayerSnapshot {
   textData?: Omit<TextLayer, keyof BaseLayer>;
   shapeData?: Omit<ShapeLayer, keyof BaseLayer>;
   groupExpanded?: boolean;
+  adjustmentData?: Adjustments;
 }
 
 export interface HistoryEntry {
@@ -362,6 +374,7 @@ export interface SerializedLayer {
   textData?: Omit<TextLayer, keyof BaseLayer>;
   shapeData?: Omit<ShapeLayer, keyof BaseLayer>;
   groupExpanded?: boolean;
+  adjustmentData?: Adjustments;
 }
 
 export interface SerializedProject {

@@ -5,6 +5,7 @@ import {
   computeHistogram,
   DEFAULT_CURVES,
   DEFAULT_LEVELS,
+  getTargetAdjustments,
   isDefaultCurves,
   isDefaultLevels,
 } from '../engine/adjustments';
@@ -57,8 +58,8 @@ export const CurvesLevelsPanel: React.FC = () => {
     return computeHistogram(data);
   }, [doc?.layers, doc?.width, doc?.height, doc?.backgroundColor]);
 
-  const levels = doc?.adjustments.levels ?? DEFAULT_LEVELS;
-  const curves = doc?.adjustments.curves ?? DEFAULT_CURVES;
+  const levels = (doc ? getTargetAdjustments(doc) : null)?.levels ?? DEFAULT_LEVELS;
+  const curves = (doc ? getTargetAdjustments(doc) : null)?.curves ?? DEFAULT_CURVES;
   const activePoints = curves[channel] ?? DEFAULT_CURVES[channel];
   const channelColor =
     CHANNEL_META.find((c) => c.key === channel)?.color ?? '#F5F5F7';

@@ -2,6 +2,7 @@ import type {
   Adjustments,
   CurvePoint,
   CurvesConfig,
+  DocumentState,
   FiltersConfig,
   LevelsConfig,
 } from '../types/editor';
@@ -69,6 +70,31 @@ function isIdentityCurve(pts?: CurvePoint[]): boolean {
   if (!pts || pts.length === 0) return true;
   if (pts.length !== 2) return false;
   return pts[0].x === 0 && pts[0].y === 0 && pts[1].x === 255 && pts[1].y === 255;
+}
+
+export function cloneAdjustments(adj: Adjustments): Adjustments {
+  return {
+    ...adj,
+    levels: adj.levels ? { ...adj.levels } : { ...DEFAULT_LEVELS },
+    curves: adj.curves
+      ? {
+          rgb: adj.curves.rgb.map((p) => ({ ...p })),
+          r: adj.curves.r.map((p) => ({ ...p })),
+          g: adj.curves.g.map((p) => ({ ...p })),
+          b: adj.curves.b.map((p) => ({ ...p })),
+        }
+      : {
+          rgb: DEFAULT_CURVES.rgb.map((p) => ({ ...p })),
+          r: DEFAULT_CURVES.r.map((p) => ({ ...p })),
+          g: DEFAULT_CURVES.g.map((p) => ({ ...p })),
+          b: DEFAULT_CURVES.b.map((p) => ({ ...p })),
+        },
+    filters: adj.filters ? { ...adj.filters } : { ...DEFAULT_FILTERS },
+  };
+}
+
+export function cloneDefaultAdjustments(): Adjustments {
+  return cloneAdjustments(DEFAULT_ADJUSTMENTS);
 }
 
 export function isDefaultLevels(levels?: LevelsConfig): boolean {
@@ -726,4 +752,29 @@ export function applyAdjustmentsToBuffer(
   }
 
   return dst;
+}
+
+/** The adjustments the Adjustments/Levels/Curves/Filters panels currently edit: the active
+ *  adjustment layer's own stack, or the document-wide one when any other layer is active. */
+export function getTargetAdjustments(
+  doc: Pick<DocumentState, 'adjustments' | 'layers' | 'activeLayerId'>
+): Adjustments {
+  const active = doc.layers.find((l) => l.id === doc.activeLayerId);
+  return active && active.type === 'adjustment' ? active.adjustments : doc.adjustments;
+}
+
+/** Returns `doc` with the same target (see getTargetAdjustments) replaced by `next`. */
+export function withTargetAdjustments<
+  T extends Pick<DocumentState, 'adjustments' | 'layers' | 'activeLayerId'>,
+>(doc: T, next: Adjustments): T {
+  const active = doc.layers.find((l) => l.id === doc.activeLayerId);
+  if (active && active.type === 'adjustment') {
+    return {
+      ...doc,
+      layers: doc.layers.map((l) =>
+        l.id === active.id && l.type === 'adjustment' ? { ...l, adjustments: next } : l
+      ),
+    };
+  }
+  return { ...doc, adjustments: next };
 }
