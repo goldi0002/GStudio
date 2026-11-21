@@ -1,10 +1,13 @@
 import {
   applyAdjustmentsToBuffer,
+  cloneAdjustments,
+  cloneDefaultAdjustments,
   DEFAULT_ADJUSTMENTS,
   isDefaultAdjustments,
 } from './adjustments';
 import type {
   Adjustments,
+  AdjustmentLayer,
   BlendMode,
   ColorOverlayEffect,
   CropRect,
@@ -263,7 +266,7 @@ function applyMaskToCanvas(
 
 function drawLayerGeometryToContext(
   ctx: CanvasRenderingContext2D,
-  layer: Exclude<Layer, GroupLayer>
+  layer: Exclude<Layer, GroupLayer | AdjustmentLayer>
 ): void {
   const cx = layer.x + (layer.width * layer.scaleX) / 2;
   const cy = layer.y + (layer.height * layer.scaleY) / 2;
@@ -469,6 +472,78 @@ function compositeLayerEffectsToContext(
   ctx.restore();
 }
 
+/** Per-pixel visibility (0..1) of a layer mask, honouring `enabled` and `inverted`. */
+function maskFactors(mask: LayerMask, w: number, h: number): Float32Array {
+  const sample = createCanvas(w, h);
+  const mctx = sample.getContext('2d', { willReadFrequently: true });
+  const out = new Float32Array(w * h);
+  if (!mctx) return out.fill(1);
+  mctx.drawImage(mask.canvas, 0, 0, w, h);
+  const m = mctx.getImageData(0, 0, w, h).data;
+  for (let i = 0, p = 0; i < m.length; i += 4, p++) {
+    const lum = (0.299 * m[i] + 0.587 * m[i + 1] + 0.114 * m[i + 2]) / 255;
+    const a = (m[i + 3] / 255) * lum;
+    out[p] = mask.inverted ? 1 - a : a;
+  }
+  return out;
+}
+
+/**
+ * Applies an adjustment layer to whatever has been drawn on `ctx` so far.
+ * Normal blend mode lerps original -> adjusted per pixel by mask * opacity (exact, no alpha doubling);
+ * other blend modes draw the adjusted copy with the canvas blend operation.
+ */
+function renderAdjustmentLayerToContext(
+  ctx: CanvasRenderingContext2D,
+  layer: AdjustmentLayer,
+  docW: number,
+  docH: number
+): void {
+  const opacity = Math.max(0, Math.min(1, layer.opacity / 100));
+  if (opacity <= 0 || isDefaultAdjustments(layer.adjustments)) return;
+
+  const src = ctx.getImageData(0, 0, docW, docH);
+  const adjusted = applyAdjustmentsToBuffer(src.data, docW, docH, layer.adjustments);
+  const factors = layer.mask && layer.mask.enabled ? maskFactors(layer.mask, docW, docH) : null;
+
+  if (layer.blendMode === 'normal') {
+    const d = src.data;
+    for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+      const f = opacity * (factors ? factors[p] : 1);
+      if (f <= 0) continue;
+      if (f >= 1) {
+        d[i] = adjusted[i];
+        d[i + 1] = adjusted[i + 1];
+        d[i + 2] = adjusted[i + 2];
+        d[i + 3] = adjusted[i + 3];
+      } else {
+        d[i] += (adjusted[i] - d[i]) * f;
+        d[i + 1] += (adjusted[i + 1] - d[i + 1]) * f;
+        d[i + 2] += (adjusted[i + 2] - d[i + 2]) * f;
+        d[i + 3] += (adjusted[i + 3] - d[i + 3]) * f;
+      }
+    }
+    ctx.putImageData(src, 0, 0);
+    return;
+  }
+
+  const layerCanvas = createCanvas(docW, docH);
+  const lctx = layerCanvas.getContext('2d');
+  if (!lctx) return;
+  const out = new ImageData(new Uint8ClampedArray(adjusted), docW, docH);
+  if (factors) {
+    for (let i = 3, p = 0; i < out.data.length; i += 4, p++) {
+      out.data[i] = Math.round(out.data[i] * factors[p]);
+    }
+  }
+  lctx.putImageData(out, 0, 0);
+  ctx.save();
+  ctx.globalAlpha = opacity;
+  ctx.globalCompositeOperation = mapBlendMode(layer.blendMode);
+  ctx.drawImage(layerCanvas, 0, 0);
+  ctx.restore();
+}
+
 export function renderLayerNodeToContext(
   ctx: CanvasRenderingContext2D,
   layer: Layer,
@@ -480,6 +555,11 @@ export function renderLayerNodeToContext(
   if (!layer.visible || layer.opacity <= 0) return;
   if (visited.has(layer.id)) return;
   visited.add(layer.id);
+
+  if (layer.type === 'adjustment') {
+    renderAdjustmentLayerToContext(ctx, layer, docW, docH);
+    return;
+  }
 
   const hasEffects = hasActiveLayerEffects(layer.effects);
 
@@ -782,7 +862,7 @@ export function cropLayers(layers: Layer[], crop: CropRect): Layer[] {
   return layers.map((layer) => {
     const nextMask = cropMaskCanvas(layer.mask, { x: cx, y: cy, width: cw, height: ch });
 
-    if (layer.type === 'group') {
+    if (layer.type === 'group' || layer.type === 'adjustment') {
       return {
         ...layer,
         width: cw,
@@ -860,7 +940,7 @@ export function resizeLayers(
       nextMask = { ...layer.mask, canvas: mCanvas };
     }
 
-    if (layer.type === 'group') {
+    if (layer.type === 'group' || layer.type === 'adjustment') {
       return { ...layer, width: newW, height: newH, mask: nextMask };
     }
 
@@ -929,7 +1009,7 @@ export function rotateLayers(
       nextMask = { ...layer.mask, canvas: rm };
     }
 
-    if (layer.type === 'group') {
+    if (layer.type === 'group' || layer.type === 'adjustment') {
       return { ...layer, width: nextDocW, height: nextDocH, mask: nextMask };
     }
 
@@ -1004,7 +1084,7 @@ export function flipLayers(
       nextMask = { ...layer.mask, canvas: fm };
     }
 
-    if (layer.type === 'group') {
+    if (layer.type === 'group' || layer.type === 'adjustment') {
       return { ...layer, mask: nextMask };
     }
 
@@ -2237,6 +2317,14 @@ export function snapshotLayers(layers: Layer[]): HistoryLayerSnapshot[] {
         ...maskSnap,
       };
     }
+    if (layer.type === 'adjustment') {
+      const { adjustments, mask, effects: _effects, ...base } = layer;
+      return {
+        base: { ...base, mask: null, effects: clonedEffects },
+        adjustmentData: cloneAdjustments(adjustments),
+        ...maskSnap,
+      };
+    }
     if (layer.type === 'group') {
       const { expanded, mask, effects: _effects, ...base } = layer;
       return {
@@ -2306,6 +2394,14 @@ export function restoreLayersFromSnapshot(snapshots: HistoryLayerSnapshot[]): La
         mask,
         ...snap.textData,
       } as TextLayer;
+    }
+    if (snap.base.type === 'adjustment') {
+      return {
+        ...restoredBase,
+        type: 'adjustment',
+        mask,
+        adjustments: cloneAdjustments(snap.adjustmentData ?? cloneDefaultAdjustments()),
+      } as AdjustmentLayer;
     }
     if (snap.base.type === 'group') {
       return {
@@ -2454,7 +2550,7 @@ export function pickTopmostLayerAtPoint(
 
   for (let i = layers.length - 1; i >= 0; i--) {
     const layer = layers[i];
-    if (layer.type === 'group' || layer.locked) continue;
+    if (layer.type === 'group' || layer.type === 'adjustment' || layer.locked) continue;
     if (!isLayerTreeVisible(layer, layers)) continue;
 
     const local = docPointToLayerLocal(docX, docY, layer);

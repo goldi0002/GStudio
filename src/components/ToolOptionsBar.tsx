@@ -170,7 +170,7 @@ export const ToolOptionsBar: React.FC = () => {
             <div className="flex items-center gap-0.5">
               <button
                 type="button"
-                disabled={!activeLayer || activeLayer.locked || activeLayer.type === 'group'}
+                disabled={!activeLayer || activeLayer.locked || activeLayer.type === 'group' || activeLayer.type === 'adjustment'}
                 onClick={() => flipActiveLayer('horizontal')}
                 title="Flip Active Layer Horizontal"
                 className={`px-1.5 py-0.5 rounded border text-[11px] flex items-center gap-1 disabled:opacity-35 cursor-pointer whitespace-nowrap transition-colors ${
@@ -185,7 +185,7 @@ export const ToolOptionsBar: React.FC = () => {
               </button>
               <button
                 type="button"
-                disabled={!activeLayer || activeLayer.locked || activeLayer.type === 'group'}
+                disabled={!activeLayer || activeLayer.locked || activeLayer.type === 'group' || activeLayer.type === 'adjustment'}
                 onClick={() => flipActiveLayer('vertical')}
                 title="Flip Active Layer Vertical"
                 className={`px-1.5 py-0.5 rounded border text-[11px] flex items-center gap-1 disabled:opacity-35 cursor-pointer whitespace-nowrap transition-colors ${

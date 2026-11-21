@@ -1,9 +1,13 @@
 import { create } from 'zustand';
 import {
+  cloneAdjustments,
+  cloneDefaultAdjustments,
   DEFAULT_ADJUSTMENTS,
   DEFAULT_CURVES,
   DEFAULT_FILTERS,
   DEFAULT_LEVELS,
+  getTargetAdjustments,
+  withTargetAdjustments,
 } from '../engine/adjustments';
 import {
   applySelectionClipToContext,
@@ -60,6 +64,7 @@ import type {
   DocumentState,
   DropShadowEffect,
   FiltersConfig,
+  AdjustmentLayer,
   GroupLayer,
   HistoryEntry,
   InnerGlowEffect,
@@ -88,31 +93,6 @@ function makeId(prefix = 'id'): string {
     return `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
   }
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function cloneAdjustments(adj: Adjustments): Adjustments {
-  return {
-    ...adj,
-    levels: adj.levels ? { ...adj.levels } : { ...DEFAULT_LEVELS },
-    curves: adj.curves
-      ? {
-          rgb: adj.curves.rgb.map((p) => ({ ...p })),
-          r: adj.curves.r.map((p) => ({ ...p })),
-          g: adj.curves.g.map((p) => ({ ...p })),
-          b: adj.curves.b.map((p) => ({ ...p })),
-        }
-      : {
-          rgb: DEFAULT_CURVES.rgb.map((p) => ({ ...p })),
-          r: DEFAULT_CURVES.r.map((p) => ({ ...p })),
-          g: DEFAULT_CURVES.g.map((p) => ({ ...p })),
-          b: DEFAULT_CURVES.b.map((p) => ({ ...p })),
-        },
-    filters: adj.filters ? { ...adj.filters } : { ...DEFAULT_FILTERS },
-  };
-}
-
-function cloneDefaultAdjustments(): Adjustments {
-  return cloneAdjustments(DEFAULT_ADJUSTMENTS);
 }
 
 /** First free "<Base> N" name for a document's layer stack. */
@@ -257,6 +237,7 @@ interface EditorStoreState {
   setEditingTarget: (target: 'layer' | 'mask') => void;
   addRasterLayer: (name?: string) => void;
   addGroupLayer: (name?: string) => void;
+  addAdjustmentLayer: (name?: string) => void;
   toggleGroupExpanded: (groupId: string) => void;
   assignLayerToGroup: (layerId: string, groupId: string | null) => void;
   addLayerMask: (layerId: string) => void;
@@ -1628,7 +1609,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     const doc = get().documents.find((d) => d.id === get().activeDocumentId);
     if (!doc || !doc.activeLayerId) return;
     const layer = doc.layers.find((l) => l.id === doc.activeLayerId);
-    if (!layer || layer.locked || layer.type === 'group') return;
+    if (!layer || layer.locked || layer.type === 'group' || layer.type === 'adjustment') return;
     if (direction === 'horizontal') {
       get().updateLayer(layer.id, { flipX: !layer.flipX }, 'Flip Layer Horizontal');
     } else {
@@ -1658,7 +1639,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       set,
       (curr) => {
         const target = curr.layers.find((l) => l.id === curr.activeLayerId);
-        if (!target || target.locked) return null;
+        if (!target || target.locked || target.type === 'adjustment') return null;
 
         if (target.type === 'group') {
           const groupIds = new Set<string>([target.id]);
@@ -1674,7 +1655,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
           }
           let movedAny = false;
           const nextLayers = curr.layers.map((l) => {
-            if (l.id !== target.id && l.parentId && groupIds.has(l.parentId) && !l.locked && l.type !== 'group') {
+            if (l.id !== target.id && l.parentId && groupIds.has(l.parentId) && !l.locked && l.type !== 'group' && l.type !== 'adjustment') {
               movedAny = true;
               return { ...l, x: l.x + dx, y: l.y + dy };
             }
@@ -1741,7 +1722,16 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
                 mask: clonedMask,
                 effects: clonedEffects,
               }
-            : src.type === 'group'
+            : src.type === 'adjustment'
+              ? {
+                  ...src,
+                  id: makeId('adjustment'),
+                  name: `${src.name} Copy`,
+                  adjustments: cloneAdjustments(src.adjustments),
+                  mask: clonedMask,
+                  effects: clonedEffects,
+                }
+              : src.type === 'group'
               ? {
                   ...src,
                   id: makeId('group'),
@@ -1876,8 +1866,12 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     if (!curDoc) return;
     const curIdx = curDoc.layers.findIndex((l) => l.id === layerId);
     if (curIdx <= 0) return;
-    if (curDoc.layers[curIdx].type === 'group' || curDoc.layers[curIdx - 1].type === 'group') {
-      get().showToast('Ungroup or select non-group layers to merge down.', 'info');
+    if (
+      [curDoc.layers[curIdx], curDoc.layers[curIdx - 1]].some(
+        (l) => l.type === 'group' || l.type === 'adjustment'
+      )
+    ) {
+      get().showToast('Merge down only works between pixel, text and shape layers.', 'info');
       return;
     }
 
@@ -1890,6 +1884,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
         const lower = doc.layers[idx - 1];
         const upper = doc.layers[idx];
         if (lower.type === 'group' || upper.type === 'group') return null;
+        if (lower.type === 'adjustment' || upper.type === 'adjustment') return null;
         const mergedCanvas = compositeLayersToCanvas(doc.width, doc.height, 'transparent', [
           { ...lower, parentId: null },
           { ...upper, parentId: null },
@@ -1970,7 +1965,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     const doc = get().documents.find((d) => d.id === get().activeDocumentId);
     if (!doc || !doc.activeLayerId) return;
     const layer = doc.layers.find((l) => l.id === doc.activeLayerId);
-    if (!layer || layer.locked || layer.type === 'group') return;
+    if (!layer || layer.locked || layer.type === 'group' || layer.type === 'adjustment') return;
     const w = layer.width * layer.scaleX;
     const h = layer.height * layer.scaleY;
 
@@ -2095,7 +2090,16 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
                 mask: clonedMask,
                 effects: clonedEffects,
               }
-            : clip.type === 'group'
+            : clip.type === 'adjustment'
+              ? {
+                  ...clip,
+                  id: makeId('adjustment'),
+                  name: `${clip.name} Pasted`,
+                  adjustments: cloneAdjustments(clip.adjustments),
+                  mask: clonedMask,
+                  effects: clonedEffects,
+                }
+              : clip.type === 'group'
               ? {
                   ...clip,
                   id: makeId('group'),
@@ -2179,10 +2183,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     withActiveDocMutation(
       get,
       set,
-      (doc) => ({
-        ...doc,
-        adjustments: { ...doc.adjustments, ...patch },
-      }),
+      (doc) => withTargetAdjustments(doc, { ...getTargetAdjustments(doc), ...patch }),
       commitLabel
     );
   },
@@ -2191,13 +2192,13 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     withActiveDocMutation(
       get,
       set,
-      (doc) => ({
-        ...doc,
-        adjustments: {
-          ...doc.adjustments,
-          levels: { ...(doc.adjustments.levels ?? DEFAULT_LEVELS), ...patch },
-        },
-      }),
+      (doc) => {
+        const adj = getTargetAdjustments(doc);
+        return withTargetAdjustments(doc, {
+          ...adj,
+          levels: { ...(adj.levels ?? DEFAULT_LEVELS), ...patch },
+        });
+      },
       commitLabel
     );
   },
@@ -2207,22 +2208,15 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       get,
       set,
       (doc) => {
-        const prevCurves = doc.adjustments.curves ?? {
-          rgb: DEFAULT_CURVES.rgb.map((p) => ({ ...p })),
-          r: DEFAULT_CURVES.r.map((p) => ({ ...p })),
-          g: DEFAULT_CURVES.g.map((p) => ({ ...p })),
-          b: DEFAULT_CURVES.b.map((p) => ({ ...p })),
-        };
-        return {
-          ...doc,
-          adjustments: {
-            ...doc.adjustments,
-            curves: {
-              ...prevCurves,
-              [channel]: points.map((p) => ({ ...p })),
-            },
+        const adj = getTargetAdjustments(doc);
+        const prevCurves = adj.curves ?? cloneDefaultAdjustments().curves!;
+        return withTargetAdjustments(doc, {
+          ...adj,
+          curves: {
+            ...prevCurves,
+            [channel]: points.map((p) => ({ ...p })),
           },
-        };
+        });
       },
       commitLabel
     );
@@ -2232,13 +2226,13 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     withActiveDocMutation(
       get,
       set,
-      (doc) => ({
-        ...doc,
-        adjustments: {
-          ...doc.adjustments,
-          filters: { ...(doc.adjustments.filters ?? DEFAULT_FILTERS), ...patch },
-        },
-      }),
+      (doc) => {
+        const adj = getTargetAdjustments(doc);
+        return withTargetAdjustments(doc, {
+          ...adj,
+          filters: { ...(adj.filters ?? DEFAULT_FILTERS), ...patch },
+        });
+      },
       commitLabel
     );
   },
@@ -2247,19 +2241,14 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     withActiveDocMutation(
       get,
       set,
-      (doc) => ({
-        ...doc,
-        adjustments: {
-          ...doc.adjustments,
-          levels: { ...DEFAULT_LEVELS },
-          curves: {
-            rgb: DEFAULT_CURVES.rgb.map((p) => ({ ...p })),
-            r: DEFAULT_CURVES.r.map((p) => ({ ...p })),
-            g: DEFAULT_CURVES.g.map((p) => ({ ...p })),
-            b: DEFAULT_CURVES.b.map((p) => ({ ...p })),
-          },
-        },
-      }),
+      (doc) => {
+        const fresh = cloneDefaultAdjustments();
+        return withTargetAdjustments(doc, {
+          ...getTargetAdjustments(doc),
+          levels: fresh.levels,
+          curves: fresh.curves,
+        });
+      },
       'Reset Levels & Curves'
     );
   },
@@ -2268,15 +2257,48 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     withActiveDocMutation(
       get,
       set,
-      (doc) => ({
-        ...doc,
-        adjustments: {
-          ...doc.adjustments,
+      (doc) =>
+        withTargetAdjustments(doc, {
+          ...getTargetAdjustments(doc),
           filters: { ...DEFAULT_FILTERS },
-        },
-      }),
+        }),
       'Reset Filters'
     );
+  },
+
+  addAdjustmentLayer: (name) => {
+    withActiveDocMutation(
+      get,
+      set,
+      (doc) => {
+        const active = doc.layers.find((l) => l.id === doc.activeLayerId);
+        const layer: AdjustmentLayer = {
+          id: makeId('adjustment'),
+          name: name || nextNumberedName(doc.layers, 'Adjustment'),
+          type: 'adjustment',
+          visible: true,
+          locked: false,
+          opacity: 100,
+          blendMode: 'normal',
+          x: 0,
+          y: 0,
+          width: doc.width,
+          height: doc.height,
+          rotation: 0,
+          scaleX: 1,
+          scaleY: 1,
+          parentId: active ? (active.type === 'group' ? active.id : (active.parentId ?? null)) : null,
+          adjustments: cloneDefaultAdjustments(),
+        };
+        // Insert directly above the active layer (or on top), so it affects what is beneath it.
+        const idx = active ? doc.layers.findIndex((l) => l.id === active.id) : -1;
+        const layers = [...doc.layers];
+        layers.splice(idx >= 0 && active?.type !== 'group' ? idx + 1 : layers.length, 0, layer);
+        return { ...doc, layers, activeLayerId: layer.id, editingTarget: 'layer' };
+      },
+      'New Adjustment Layer'
+    );
+    get().showToast('Adjustment layer added. Use the Adjustments panel to edit it.', 'success');
   },
 
   commitAdjustmentsHistory: (label = 'Color Adjustment') => {
@@ -2296,16 +2318,16 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     withActiveDocMutation(
       get,
       set,
-      (curr) => ({
-        ...curr,
-        adjustments: {
-          ...cloneAdjustments(curr.adjustments),
+      (curr) => {
+        const adj = getTargetAdjustments(curr);
+        return withTargetAdjustments(curr, {
+          ...cloneAdjustments(adj),
           ...autoAdj,
-          levels: curr.adjustments.levels ?? { ...DEFAULT_LEVELS },
-          curves: curr.adjustments.curves ?? cloneDefaultAdjustments().curves,
-          filters: curr.adjustments.filters ?? { ...DEFAULT_FILTERS },
-        },
-      }),
+          levels: adj.levels ?? { ...DEFAULT_LEVELS },
+          curves: adj.curves ?? cloneDefaultAdjustments().curves,
+          filters: adj.filters ?? { ...DEFAULT_FILTERS },
+        });
+      },
       'Auto Balance'
     );
     get().showToast('Applied local histogram Auto Balance.', 'success');
@@ -2315,10 +2337,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     withActiveDocMutation(
       get,
       set,
-      (doc) => ({
-        ...doc,
-        adjustments: cloneDefaultAdjustments(),
-      }),
+      (doc) => withTargetAdjustments(doc, cloneDefaultAdjustments()),
       'Reset Adjustments'
     );
   },

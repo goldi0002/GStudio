@@ -4,12 +4,15 @@ import {
   applyDenoise,
   buildLevelsLut,
   buildSplineCurveLut,
+  cloneAdjustments,
   computeHistogram,
   DEFAULT_ADJUSTMENTS,
   DEFAULT_CURVES,
   DEFAULT_FILTERS,
   DEFAULT_LEVELS,
+  getTargetAdjustments,
   isDefaultAdjustments,
+  withTargetAdjustments,
 } from './adjustments';
 import { encodeBMP } from './bmpEncoder';
 import { cropRatioFor, fitRatioRect, parseRatio } from './cropRatio';
@@ -19,6 +22,7 @@ import {
   computeLayerResizeRect,
   computePolygonBounds,
   computeShadowOffset,
+  cropLayers,
   computeSnapGuides,
   DEFAULT_LAYER_EFFECTS,
   docPointToLayerLocal,
@@ -35,12 +39,14 @@ import {
   pickTopmostLayerAtPoint,
   rasterizeSelectionToMaskBuffer,
   rgbaToHex,
+  restoreLayersFromSnapshot,
   rotatePointAroundCenter,
   snapRotationAngle,
+  snapshotLayers,
   spotHealBuffer,
   traceSelectionBoundarySegments,
 } from './canvasOps';
-import type { GroupLayer, Layer, RasterLayer, ShapeLayer } from '../types/editor';
+import type { AdjustmentLayer, GroupLayer, Layer, RasterLayer, ShapeLayer } from '../types/editor';
 
 // 1. Default adjustments identity test
 {
@@ -819,6 +825,76 @@ import type { GroupLayer, Layer, RasterLayer, ShapeLayer } from '../types/editor
   const same = new Uint8ClampedArray(buf);
   applyDenoise(same, w, h, 0);
   assert.deepEqual(same, buf, 'Amount 0 leaves pixels untouched');
+}
+
+// Adjustment layers: targeting, history snapshots and doc transforms
+{
+  const adjLayer: AdjustmentLayer = {
+    id: 'adj1',
+    name: 'Adjustment 1',
+    type: 'adjustment',
+    visible: true,
+    locked: false,
+    opacity: 60,
+    blendMode: 'multiply',
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 50,
+    rotation: 0,
+    scaleX: 1,
+    scaleY: 1,
+    parentId: null,
+    adjustments: { ...cloneAdjustments(DEFAULT_ADJUSTMENTS), saturation: -40 },
+  };
+  const other: ShapeLayer = {
+    id: 's1',
+    name: 'Shape',
+    type: 'shape',
+    visible: true,
+    locked: false,
+    opacity: 100,
+    blendMode: 'normal',
+    x: 0,
+    y: 0,
+    width: 10,
+    height: 10,
+    rotation: 0,
+    scaleX: 1,
+    scaleY: 1,
+    shapeKind: 'rect',
+    fill: '#fff',
+    fillEnabled: true,
+    stroke: '#000',
+    strokeEnabled: false,
+    strokeWidth: 1,
+    cornerRadius: 0,
+  };
+  const globalAdj = { ...cloneAdjustments(DEFAULT_ADJUSTMENTS), brightness: 10 };
+  const docOnAdj = { adjustments: globalAdj, layers: [other, adjLayer], activeLayerId: 'adj1' };
+  assert.equal(getTargetAdjustments(docOnAdj).saturation, -40, 'Active adjustment layer is the edit target');
+  const docOnShape = { ...docOnAdj, activeLayerId: 's1' };
+  assert.equal(getTargetAdjustments(docOnShape).brightness, 10, 'Other layers edit the global stack');
+
+  const edited = withTargetAdjustments(docOnAdj, { ...cloneAdjustments(DEFAULT_ADJUSTMENTS), hue: 30 });
+  assert.equal(edited.adjustments.brightness, 10, 'Global stack untouched when editing a layer');
+  assert.equal((edited.layers[1] as AdjustmentLayer).adjustments.hue, 30, 'Layer stack updated');
+  const editedGlobal = withTargetAdjustments(docOnShape, { ...cloneAdjustments(DEFAULT_ADJUSTMENTS), hue: 5 });
+  assert.equal(editedGlobal.adjustments.hue, 5, 'Global stack updated when a normal layer is active');
+  assert.equal((editedGlobal.layers[1] as AdjustmentLayer).adjustments.saturation, -40);
+
+  const restored = restoreLayersFromSnapshot(snapshotLayers([other, adjLayer]));
+  const back = restored[1] as AdjustmentLayer;
+  assert.equal(back.type, 'adjustment');
+  assert.equal(back.adjustments.saturation, -40, 'Snapshot round trip keeps adjustments');
+  assert.equal(back.opacity, 60);
+  assert.equal(back.blendMode, 'multiply');
+  assert.notEqual(back.adjustments, adjLayer.adjustments, 'Snapshot clones the adjustments');
+
+  const cropped = cropLayers([adjLayer], { x: 10, y: 10, width: 40, height: 20 })[0];
+  assert.equal(cropped.type, 'adjustment');
+  assert.equal(cropped.width, 40, 'Crop keeps adjustment layers canvas-sized');
+  assert.equal(pickTopmostLayerAtPoint(5, 5, [other, adjLayer])?.id, 's1', 'Adjustment layers are never hit-tested');
 }
 
 console.log('All GStudio graphics engine unit tests passed.');

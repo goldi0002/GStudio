@@ -1,4 +1,5 @@
 import { encodeBMP } from '../engine/bmpEncoder';
+import { cloneAdjustments, cloneDefaultAdjustments } from '../engine/adjustments';
 import {
   cloneLayerEffects,
   compositeLayersToCanvas,
@@ -453,6 +454,8 @@ export function serializeDocument(doc: DocumentState): SerializedProject {
       };
     } else if (layer.type === 'group') {
       base.groupExpanded = layer.expanded;
+    } else if (layer.type === 'adjustment') {
+      base.adjustmentData = cloneAdjustments(layer.adjustments);
     } else {
       base.shapeData = {
         shapeKind: layer.shapeKind,
@@ -563,6 +566,31 @@ export async function deserializeProject(
           parentId: sl.parentId ?? null,
           mask,
           ...sl.textData,
+        };
+      }
+
+      if (sl.type === 'adjustment') {
+        return {
+          id: sl.id,
+          name: sl.name,
+          type: 'adjustment',
+          visible: sl.visible,
+          locked: sl.locked,
+          opacity: sl.opacity,
+          blendMode: sl.blendMode,
+          x: 0,
+          y: 0,
+          width: data.width,
+          height: data.height,
+          rotation: 0,
+          scaleX: 1,
+          scaleY: 1,
+          flipX: false,
+          flipY: false,
+          effects: null,
+          parentId: sl.parentId ?? null,
+          mask,
+          adjustments: cloneAdjustments(sl.adjustmentData ?? cloneDefaultAdjustments()),
         };
       }
 

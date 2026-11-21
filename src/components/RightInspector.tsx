@@ -13,6 +13,7 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  SlidersHorizontal,
   Image as ImageIcon,
   Lock,
   Merge,
@@ -26,6 +27,7 @@ import {
 } from 'lucide-react';
 import {
   DEFAULT_FILTERS,
+  getTargetAdjustments,
   isDefaultAdjustments,
   isDefaultFilters,
 } from '../engine/adjustments';
@@ -209,6 +211,7 @@ export const RightInspector: React.FC = () => {
     setEditingTarget,
     addRasterLayer,
     addGroupLayer,
+    addAdjustmentLayer,
     toggleGroupExpanded,
     assignLayerToGroup,
     addLayerMask,
@@ -304,7 +307,9 @@ export const RightInspector: React.FC = () => {
   }
 
   const estimatedBytes = doc.width * doc.height * 4 * Math.max(1, doc.layers.length);
-  const filters = doc.adjustments.filters ?? DEFAULT_FILTERS;
+  const targetAdj = getTargetAdjustments(doc);
+  const editingLayerAdj = activeLayer?.type === 'adjustment';
+  const filters = targetAdj.filters ?? DEFAULT_FILTERS;
 
   return (
     <aside
@@ -337,6 +342,15 @@ export const RightInspector: React.FC = () => {
               className="p-1 rounded hover:bg-[var(--lp-hover)] text-[var(--lp-text-secondary)] hover:text-[var(--lp-text)] cursor-pointer"
             >
               <FolderPlus className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              title="Add Adjustment Layer"
+              aria-label="Add Adjustment Layer"
+              onClick={() => addAdjustmentLayer()}
+              className="p-1 rounded hover:bg-[var(--lp-hover)] text-[var(--lp-text-secondary)] hover:text-[var(--lp-text)] cursor-pointer"
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
             </button>
             <button
               type="button"
@@ -458,6 +472,7 @@ export const RightInspector: React.FC = () => {
             return (
               <div
                 key={layer.id}
+                data-layer-row={layer.name}
                 draggable
                 onDragStart={() => setDragLayerIdx(index)}
                 onDragOver={(e) => e.preventDefault()}
@@ -544,7 +559,9 @@ export const RightInspector: React.FC = () => {
                           ? 'rgba(191, 90, 242, 0.16)'
                           : layer.type === 'group'
                             ? 'rgba(48, 209, 88, 0.16)'
-                            : 'rgba(255, 159, 10, 0.16)',
+                            : layer.type === 'adjustment'
+                              ? 'rgba(10, 132, 255, 0.16)'
+                              : 'rgba(255, 159, 10, 0.16)',
                     color:
                       layer.type === 'raster'
                         ? '#5AC8FA'
@@ -552,7 +569,9 @@ export const RightInspector: React.FC = () => {
                           ? '#BF5AF2'
                           : layer.type === 'group'
                             ? '#30D158'
-                            : '#FF9F0A',
+                            : layer.type === 'adjustment'
+                              ? '#0A84FF'
+                              : '#FF9F0A',
                   }}
                 >
                   {layer.type === 'raster' ? (
@@ -565,6 +584,8 @@ export const RightInspector: React.FC = () => {
                     ) : (
                       <Folder className="w-3 h-3" />
                     )
+                  ) : layer.type === 'adjustment' ? (
+                    <SlidersHorizontal className="w-3 h-3" />
                   ) : (
                     <Shapes className="w-3 h-3" />
                   )}
@@ -746,7 +767,7 @@ export const RightInspector: React.FC = () => {
               </button>
               <button
                 type="button"
-                disabled={activeLayerIndex <= 0 || activeLayer.type === 'group'}
+                disabled={activeLayerIndex <= 0 || activeLayer.type === 'group' || activeLayer.type === 'adjustment'}
                 onClick={() => mergeLayerDown(activeLayer.id)}
                 title="Merge Down"
                 className="p-1 rounded border hover:bg-[var(--lp-hover)] disabled:opacity-30 cursor-pointer"
@@ -777,7 +798,18 @@ export const RightInspector: React.FC = () => {
         onToggle={() => toggleInspectorPanel('properties')}
       >
         {activeLayer ? (
-          activeLayer.type === 'group' ? (
+          activeLayer.type === 'adjustment' ? (
+            <div className="space-y-1.5 text-[11px] text-[var(--lp-text-secondary)]">
+              <div className="flex items-center justify-between text-[var(--lp-text)]">
+                <span className="font-medium">Adjustment Layer</span>
+              </div>
+              <p className="text-[10px] leading-relaxed">
+                Applies to everything below it{activeLayer.parentId ? ' in its group' : ''}. Edit its
+                settings in the Adjustments panel. Opacity, blend mode and a layer mask control where
+                and how strongly it applies.
+              </p>
+            </div>
+          ) : activeLayer.type === 'group' ? (
             <div className="space-y-1.5 text-[11px] text-[var(--lp-text-secondary)]">
               <div className="flex items-center justify-between text-[var(--lp-text)]">
                 <span className="font-medium">Layer Group</span>
@@ -1707,7 +1739,7 @@ export const RightInspector: React.FC = () => {
             >
               Split
             </button>
-            {!isDefaultAdjustments(doc.adjustments) && (
+            {!isDefaultAdjustments(targetAdj) && (
               <button
                 type="button"
                 onClick={resetAdjustments}
@@ -1721,6 +1753,12 @@ export const RightInspector: React.FC = () => {
         }
       >
         <div className="space-y-2.5">
+          <p
+            className="text-[10px] text-[var(--lp-text-secondary)]"
+            data-testid="adjustment-target"
+          >
+            Editing: {editingLayerAdj && activeLayer ? `“${activeLayer.name}” adjustment layer` : 'whole document'}
+          </p>
           {/* 1-Click Auto Balance & Non-Destructive Quick Looks */}
           <div className="space-y-1.5">
             <button
@@ -1753,7 +1791,7 @@ export const RightInspector: React.FC = () => {
           <div className="h-px" style={{ backgroundColor: 'var(--lp-border)' }} />
 
           {adjustmentSliders.map((item) => {
-            const val = doc.adjustments[item.key];
+            const val = targetAdj[item.key];
             return (
               <div key={item.key} className="space-y-1">
                 <div className="flex items-center justify-between text-[11px]">
@@ -1793,17 +1831,17 @@ export const RightInspector: React.FC = () => {
               type="button"
               onClick={() =>
                 updateAdjustments(
-                  { grayscale: !doc.adjustments.grayscale },
+                  { grayscale: !targetAdj.grayscale },
                   'Toggle Grayscale'
                 )
               }
               className={`flex-1 py-1.5 rounded border text-[11px] font-medium cursor-pointer transition-colors ${
-                doc.adjustments.grayscale
+                targetAdj.grayscale
                   ? 'bg-[#0A84FF] text-white border-[#0A84FF]'
                   : 'hover:bg-[var(--lp-hover)]'
               }`}
               style={{
-                borderColor: doc.adjustments.grayscale ? '#0A84FF' : 'var(--lp-border)',
+                borderColor: targetAdj.grayscale ? '#0A84FF' : 'var(--lp-border)',
               }}
             >
               Grayscale
@@ -1811,15 +1849,15 @@ export const RightInspector: React.FC = () => {
             <button
               type="button"
               onClick={() =>
-                updateAdjustments({ sepia: !doc.adjustments.sepia }, 'Toggle Sepia')
+                updateAdjustments({ sepia: !targetAdj.sepia }, 'Toggle Sepia')
               }
               className={`flex-1 py-1.5 rounded border text-[11px] font-medium cursor-pointer transition-colors ${
-                doc.adjustments.sepia
+                targetAdj.sepia
                   ? 'bg-[#0A84FF] text-white border-[#0A84FF]'
                   : 'hover:bg-[var(--lp-hover)]'
               }`}
               style={{
-                borderColor: doc.adjustments.sepia ? '#0A84FF' : 'var(--lp-border)',
+                borderColor: targetAdj.sepia ? '#0A84FF' : 'var(--lp-border)',
               }}
             >
               Sepia

@@ -614,7 +614,7 @@ export const CanvasWorkspace: React.FC = () => {
     // Move Tool Bounding Box, Resize Handles & Rotation Stem
     if (activeTool === 'move') {
       const activeLayer = doc.layers.find((l) => l.id === doc.activeLayerId);
-      if (activeLayer && activeLayer.visible && activeLayer.type !== 'group') {
+      if (activeLayer && activeLayer.visible && activeLayer.type !== 'group' && activeLayer.type !== 'adjustment') {
         const lx = origin.x + activeLayer.x * doc.zoom;
         const ly = origin.y + activeLayer.y * doc.zoom;
         const lw = activeLayer.width * activeLayer.scaleX * doc.zoom;
@@ -1343,7 +1343,7 @@ export const CanvasWorkspace: React.FC = () => {
       if (px < 0 || py < 0 || px >= doc.width || py >= doc.height) return;
       const activeLayer = doc.layers.find((l) => l.id === doc.activeLayerId);
       let sampleCanvas: HTMLCanvasElement | null = null;
-      if (activeLayer && activeLayer.visible && activeLayer.type !== 'group') {
+      if (activeLayer && activeLayer.visible && activeLayer.type !== 'group' && activeLayer.type !== 'adjustment') {
         const layerBuf = createCanvas(doc.width, doc.height);
         const lctx = layerBuf.getContext('2d');
         if (lctx) {
@@ -1391,7 +1391,7 @@ export const CanvasWorkspace: React.FC = () => {
 
     if (activeTool === 'move') {
       // Check active layer's transform/rotation handles first so they always take precedence
-      if (activeLayer && activeLayer.visible && activeLayer.type !== 'group' && !activeLayer.locked) {
+      if (activeLayer && activeLayer.visible && activeLayer.type !== 'group' && activeLayer.type !== 'adjustment' && !activeLayer.locked) {
         const lx = origin.x + activeLayer.x * doc.zoom;
         const ly = origin.y + activeLayer.y * doc.zoom;
         const lw = activeLayer.width * activeLayer.scaleX * doc.zoom;
@@ -1461,6 +1461,10 @@ export const CanvasWorkspace: React.FC = () => {
       if (!targetLayer) return;
       if (targetLayer.type === 'group') {
         showToast('Select a child layer inside the group to move or resize.', 'info');
+        return;
+      }
+      if (targetLayer.type === 'adjustment') {
+        showToast('Adjustment layers cover the whole canvas; edit them in the Adjustments panel.', 'info');
         return;
       }
       if (targetLayer.locked) {
@@ -1845,7 +1849,7 @@ export const CanvasWorkspace: React.FC = () => {
 
       if (toolOptions.snapToGuides && !e.altKey) {
         const siblingBounds = doc.layers
-          .filter((l) => l.id !== targetLayer.id && l.visible && l.type !== 'group')
+          .filter((l) => l.id !== targetLayer.id && l.visible && l.type !== 'group' && l.type !== 'adjustment')
           .map((l) => ({
             x: l.x,
             y: l.y,
@@ -1898,7 +1902,7 @@ export const CanvasWorkspace: React.FC = () => {
 
       if (d.origRotation === 0 && !e.shiftKey && toolOptions.snapToGuides && !e.altKey) {
         const siblingBounds = doc.layers
-          .filter((l) => l.id !== targetLayer.id && l.visible && l.type !== 'group')
+          .filter((l) => l.id !== targetLayer.id && l.visible && l.type !== 'group' && l.type !== 'adjustment')
           .map((l) => ({
             x: l.x,
             y: l.y,
