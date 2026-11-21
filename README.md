@@ -82,4 +82,4 @@ scripts/make-fixtures.ts  Fixture generator
 
 ## Tech stack
 
-React 19, TypeScript, Vite 8, Tailwind CSS 4, Zustand, Motion, Lucide icons, and `vite-plugin-pwa` (Workbox) for offline support.
+React 19, TypeScript, Vite 8, Tailwind CSS 4, Zustand, Lucide icons, and `vite-plugin-pwa` (Workbox) for offline support.

@@ -38,6 +38,7 @@ import {
 import { SAMPLE_PRESETS } from '../engine/sampleImages';
 import {
   type DecodedImageResult,
+  deserializeProject,
   saveBlobLocally,
   serializeDocument,
 } from '../persistence/fileAccess';
@@ -684,7 +685,6 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
   },
 
   openProjectData: async (serialized) => {
-    const { deserializeProject } = await import('../persistence/fileAccess');
     const loaded = await deserializeProject(serialized);
     const existing = get().documents.find((d) => d.id === loaded.id);
     if (existing) {
