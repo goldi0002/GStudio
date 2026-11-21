@@ -175,6 +175,13 @@ export const TopToolbar: React.FC = () => {
         disabled: !activeDoc,
         action: () => openModal('exportImage'),
       },
+      {
+        label: 'Batch Process Images…',
+        action: () => {
+          setOpenMenu(null);
+          openModal('batchProcess');
+        },
+      },
       { divider: true },
       {
         label: 'Close Document',

@@ -58,9 +58,45 @@ export interface OuterGlowEffect {
   spread: number; // 0..24
 }
 
+export interface StrokeEffect {
+  enabled: boolean;
+  color: string;
+  opacity: number; // 0..100
+  width: number; // 1..40 px
+  position: 'outside' | 'inside';
+}
+
+export interface ColorOverlayEffect {
+  enabled: boolean;
+  color: string;
+  opacity: number; // 0..100
+  blendMode: BlendMode;
+}
+
+export interface InnerShadowEffect {
+  enabled: boolean;
+  color: string;
+  opacity: number; // 0..100
+  blur: number; // 0..64
+  distance: number; // 0..80
+  angle: number; // -180..180 degrees
+}
+
+export interface InnerGlowEffect {
+  enabled: boolean;
+  color: string;
+  opacity: number; // 0..100
+  blur: number; // 0..64
+  spread: number; // 0..24
+}
+
 export interface LayerEffects {
   dropShadow: DropShadowEffect;
   outerGlow: OuterGlowEffect;
+  stroke: StrokeEffect;
+  colorOverlay: ColorOverlayEffect;
+  innerShadow: InnerShadowEffect;
+  innerGlow: InnerGlowEffect;
 }
 
 export interface BaseLayer {

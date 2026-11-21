@@ -5,6 +5,7 @@ import {
   FileImage,
   FolderOpen,
   HardDrive,
+  Images,
   Plus,
   ShieldCheck,
   Trash2,
@@ -202,6 +203,15 @@ export const WelcomeScreen: React.FC = () => {
             >
               <FolderOpen className="w-4 h-4 text-[var(--lp-text-secondary)]" />
               <span>Open Project (.lps)…</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => openModal('batchProcess')}
+              className="w-full py-2 px-3 rounded-lg border hover:bg-[var(--lp-hover)] text-[12px] font-medium flex items-center gap-2 transition-colors cursor-pointer"
+              style={{ borderColor: 'var(--lp-border)' }}
+            >
+              <Images className="w-4 h-4 text-[var(--lp-text-secondary)]" />
+              <span>Batch Process…</span>
             </button>
             {documents.length > 0 && (
               <button
