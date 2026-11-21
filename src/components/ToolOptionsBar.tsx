@@ -17,6 +17,7 @@ import {
   Ruler,
   X,
 } from 'lucide-react';
+import { cropRatioFor, fitRatioRect, parseRatio } from '../engine/cropRatio';
 import { decodeImageFile, pickLocalFiles } from '../persistence/fileAccess';
 import { useEditorStore } from '../store/useEditorStore';
 import type { ShapeKind } from '../types/editor';
@@ -64,31 +65,26 @@ export const ToolOptionsBar: React.FC = () => {
 
   const activeLayer = doc.layers.find((l) => l.id === doc.activeLayerId);
 
-  const applyCropAspect = (aspect: typeof toolOptions.cropAspect) => {
-    updateToolOptions({ cropAspect: aspect });
+  const applyCropAspect = (aspect: typeof toolOptions.cropAspect, customRatio?: number) => {
+    const custom = customRatio ?? toolOptions.cropCustomRatio;
+    updateToolOptions(
+      aspect === 'custom'
+        ? { cropAspect: aspect, cropCustomRatio: custom }
+        : { cropAspect: aspect }
+    );
     if (!cropRect) return;
-    if (aspect === 'free') return;
-    const ratios: Record<string, number> = {
-      '1:1': 1,
-      '4:3': 4 / 3,
-      '16:9': 16 / 9,
-      '3:2': 3 / 2,
-      '4:5': 4 / 5,
-    };
-    const r = ratios[aspect];
+    const r = cropRatioFor(aspect, custom);
     if (!r) return;
-    let w = cropRect.width;
-    let h = w / r;
-    if (h > doc.height) {
-      h = doc.height;
-      w = h * r;
+    setCropRect(fitRatioRect(doc.width, doc.height, r, cropRect.width));
+  };
+
+  const swapCropOrientation = () => {
+    const r = cropRatioFor(toolOptions.cropAspect, toolOptions.cropCustomRatio);
+    if (r) {
+      applyCropAspect('custom', 1 / r);
+    } else if (cropRect) {
+      applyCropAspect('custom', cropRect.height / cropRect.width);
     }
-    setCropRect({
-      x: Math.max(0, Math.round((doc.width - w) / 2)),
-      y: Math.max(0, Math.round((doc.height - h) / 2)),
-      width: Math.round(w),
-      height: Math.round(h),
-    });
   };
 
   const handlePlaceImageLayer = async () => {
@@ -401,6 +397,40 @@ export const ToolOptionsBar: React.FC = () => {
                 </button>
               ))}
             </div>
+            <input
+              type="text"
+              aria-label="Custom crop ratio"
+              title="Custom ratio, e.g. 21:9 or 1.91"
+              placeholder="W:H"
+              key={toolOptions.cropAspect === 'custom' ? toolOptions.cropCustomRatio : 'preset'}
+              defaultValue={
+                toolOptions.cropAspect === 'custom'
+                  ? String(Math.round(toolOptions.cropCustomRatio * 1000) / 1000)
+                  : ''
+              }
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return;
+                const r = parseRatio(e.currentTarget.value);
+                if (r) applyCropAspect('custom', r);
+              }}
+              onBlur={(e) => {
+                const r = parseRatio(e.currentTarget.value);
+                if (r) applyCropAspect('custom', r);
+              }}
+              className={`w-14 px-1.5 py-0.5 rounded border text-[11px] font-mono-tabular bg-transparent ${
+                toolOptions.cropAspect === 'custom' ? 'border-[#0A84FF]' : ''
+              }`}
+              style={toolOptions.cropAspect === 'custom' ? undefined : { borderColor: 'var(--lp-border)' }}
+            />
+            <button
+              type="button"
+              title="Swap landscape / portrait"
+              aria-label="Swap landscape / portrait"
+              onClick={swapCropOrientation}
+              className="px-1.5 py-0.5 rounded hover:bg-[var(--lp-hover)] text-[11px] cursor-pointer text-[var(--lp-text-secondary)]"
+            >
+              ⇄
+            </button>
             <div className="h-4 w-px bg-[var(--lp-border)]" />
             <div className="flex items-center gap-0.5">
               <button

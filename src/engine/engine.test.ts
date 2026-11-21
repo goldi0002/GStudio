@@ -11,6 +11,7 @@ import {
   isDefaultAdjustments,
 } from './adjustments';
 import { encodeBMP } from './bmpEncoder';
+import { cropRatioFor, fitRatioRect, parseRatio } from './cropRatio';
 import {
   cloneLayerEffects,
   cloneStampBuffer,
@@ -740,6 +741,23 @@ import type { GroupLayer, Layer, RasterLayer, ShapeLayer } from '../types/editor
   assert.equal(dst[4], 200);
   assert.equal(dst[7], 255, 'Full mask pixel fills opaquely');
   assert.equal(dst[11], 128, 'Half mask pixel fills at half alpha');
+}
+
+{
+  // Crop aspect ratios
+  assert.equal(cropRatioFor('free', 1.5), null);
+  assert.equal(cropRatioFor('16:9', 1.5), 16 / 9);
+  assert.equal(cropRatioFor('custom', 2), 2);
+  assert.equal(cropRatioFor('custom', NaN), null, 'Invalid custom ratio falls back to free');
+  assert.equal(parseRatio('21:9'), 21 / 9);
+  assert.equal(parseRatio('4 x 5'), 0.8);
+  assert.equal(parseRatio('1.5'), 1.5);
+  assert.equal(parseRatio('0:5'), null);
+  assert.equal(parseRatio('abc'), null);
+  const wide = fitRatioRect(1000, 500, 1, 1000);
+  assert.deepEqual(wide, { x: 250, y: 0, width: 500, height: 500 }, 'Square is clamped to height');
+  const half = fitRatioRect(1000, 1000, 2, 400);
+  assert.deepEqual(half, { x: 300, y: 400, width: 400, height: 200 });
 }
 
 console.log('All GStudio graphics engine unit tests passed.');

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { cropRatioFor } from '../engine/cropRatio';
 import { isDefaultAdjustments } from '../engine/adjustments';
 import {
   applyCloneStampDab,
@@ -142,6 +143,10 @@ export const CanvasWorkspace: React.FC = () => {
   const [cursorScreen, setCursorScreen] = useState<{ x: number; y: number } | null>(null);
   const [renderTick, setRenderTick] = useState(0);
   const dragRef = useRef<DragMode>({ kind: 'none' });
+  // Active touch pointers (for pinch zoom) and the latest pen pressure (0-1) for brush size.
+  const touchPointsRef = useRef(new Map<number, { x: number; y: number }>());
+  const pinchRef = useRef<{ dist: number; zoom: number } | null>(null);
+  const pressureRef = useRef(1);
   const [shapePreview, setShapePreview] = useState<{
     x: number;
     y: number;
@@ -966,7 +971,7 @@ export const CanvasWorkspace: React.FC = () => {
     const size = isEraser ? toolOptions.eraserSize : toolOptions.brushSize;
     const hardness = (isEraser ? toolOptions.eraserHardness : toolOptions.brushHardness) / 100;
     const opacity = (isEraser ? toolOptions.eraserOpacity : toolOptions.brushOpacity) / 100;
-    const radius = Math.max(0.5, size / 2);
+    const radius = Math.max(0.5, (size * pressureRef.current) / 2);
 
     ctx.save();
     if (doc.selection && doc.selection.kind !== 'mask') {
@@ -1192,6 +1197,18 @@ export const CanvasWorkspace: React.FC = () => {
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!doc) return;
     (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+    pressureRef.current = e.pointerType === 'pen' && e.pressure > 0 ? e.pressure : 1;
+    if (e.pointerType === 'touch') {
+      touchPointsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (touchPointsRef.current.size === 2) {
+        // A second finger turns the gesture into a pinch: drop any stroke or drag in progress.
+        dragRef.current = { kind: 'none' };
+        const [a, b] = [...touchPointsRef.current.values()];
+        pinchRef.current = { dist: Math.hypot(a.x - b.x, a.y - b.y) || 1, zoom: doc.zoom };
+        return;
+      }
+      if (touchPointsRef.current.size > 2) return;
+    }
     const { x: docX, y: docY, sx, sy } = screenToDoc(e.clientX, e.clientY);
     const origin = getArtboardOrigin();
 
@@ -1773,6 +1790,30 @@ export const CanvasWorkspace: React.FC = () => {
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!doc) return;
+    if (e.pointerType === 'pen') pressureRef.current = e.pressure > 0 ? e.pressure : 1;
+    if (e.pointerType === 'touch' && touchPointsRef.current.has(e.pointerId)) {
+      const prev = touchPointsRef.current.get(e.pointerId)!;
+      touchPointsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const pinch = pinchRef.current;
+      if (pinch && touchPointsRef.current.size === 2) {
+        const [a, b] = [...touchPointsRef.current.values()];
+        const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+        const nextZoom = Math.max(0.05, Math.min(16, pinch.zoom * (dist / pinch.dist)));
+        const ratio = nextZoom / doc.zoom;
+        const rect = e.currentTarget.getBoundingClientRect();
+        const mx = (a.x + b.x) / 2 - rect.left;
+        const my = (a.y + b.y) / 2 - rect.top;
+        const rulerOffset = viewportSettings.showRulers ? RULER_SIZE : 0;
+        const cx = rulerOffset + (containerSize.width - rulerOffset) / 2;
+        const cy = rulerOffset + (containerSize.height - rulerOffset) / 2;
+        // Zoom about the pinch centre, and follow the centre as the fingers pan.
+        const panX = mx - cx - (mx - cx - doc.panX) * ratio + (e.clientX - prev.x) / 2;
+        const panY = my - cy - (my - cy - doc.panY) * ratio + (e.clientY - prev.y) / 2;
+        setZoom(nextZoom, panX, panY);
+        return;
+      }
+      if (touchPointsRef.current.size > 1) return;
+    }
     const { x: docX, y: docY, sx, sy } = screenToDoc(e.clientX, e.clientY);
     setCursorScreen({ x: sx, y: sy });
     setCursorCanvasPos({ x: Math.round(docX), y: Math.round(docY) });
@@ -2005,14 +2046,7 @@ export const CanvasWorkspace: React.FC = () => {
       }
 
       // Enforce locked aspect ratio if selected
-      const ratioMap: Record<string, number> = {
-        '1:1': 1,
-        '4:3': 4 / 3,
-        '16:9': 16 / 9,
-        '3:2': 3 / 2,
-        '4:5': 4 / 5,
-      };
-      const targetRatio = ratioMap[toolOptions.cropAspect];
+      const targetRatio = cropRatioFor(toolOptions.cropAspect, toolOptions.cropCustomRatio);
       if (targetRatio) {
         if (d.handle === 'n' || d.handle === 's') {
           width = Math.min(doc.width - x, height * targetRatio);
@@ -2176,7 +2210,14 @@ export const CanvasWorkspace: React.FC = () => {
     }
   };
 
-  const handlePointerUp = () => {
+  const handlePointerUp = (e?: React.PointerEvent<HTMLDivElement>) => {
+    if (e?.pointerType === 'touch') {
+      const wasPinching = pinchRef.current !== null;
+      touchPointsRef.current.delete(e.pointerId);
+      if (touchPointsRef.current.size < 2) pinchRef.current = null;
+      // Lifting a finger after a pinch must not commit or start anything else.
+      if (wasPinching) return;
+    }
     const d = dragRef.current;
     if (d.kind === 'lasso-polygon') {
       return;
@@ -2360,6 +2401,7 @@ export const CanvasWorkspace: React.FC = () => {
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
       onPointerLeave={() => {
         setCursorScreen(null);
         setCursorCanvasPos(null);
@@ -2369,6 +2411,7 @@ export const CanvasWorkspace: React.FC = () => {
       className="flex-1 relative overflow-hidden select-none mac-workspace-well"
       style={{
         cursor: cursorStyle,
+        touchAction: 'none',
       }}
     >
       <canvas
