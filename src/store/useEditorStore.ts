@@ -14,8 +14,12 @@ import {
   createCanvas,
   createWhiteMaskCanvas,
   cropLayers,
+  DEFAULT_COLOR_OVERLAY,
   DEFAULT_DROP_SHADOW,
+  DEFAULT_INNER_GLOW,
+  DEFAULT_INNER_SHADOW,
   DEFAULT_OUTER_GLOW,
+  DEFAULT_STROKE,
   extractSelectionFromCanvas,
   featherMaskBuffer,
   fillCanvasWithSelectionMask,
@@ -47,6 +51,7 @@ import {
 } from '../persistence/indexedDb';
 import type {
   Adjustments,
+  ColorOverlayEffect,
   CropRect,
   CurvePoint,
   CurvesConfig,
@@ -55,11 +60,14 @@ import type {
   FiltersConfig,
   GroupLayer,
   HistoryEntry,
+  InnerGlowEffect,
+  InnerShadowEffect,
   Layer,
   LayerEffects,
   LayerMask,
   LevelsConfig,
   OuterGlowEffect,
+  StrokeEffect,
   RasterLayer,
   RecentProjectMeta,
   SelectionState,
@@ -103,6 +111,14 @@ function cloneAdjustments(adj: Adjustments): Adjustments {
 
 function cloneDefaultAdjustments(): Adjustments {
   return cloneAdjustments(DEFAULT_ADJUSTMENTS);
+}
+
+/** First free "<Base> N" name for a document's layer stack. */
+function nextNumberedName(layers: Layer[], base: string): string {
+  const used = new Set(layers.map((l) => l.name));
+  let index = 1;
+  while (used.has(`${base} ${index}`)) index += 1;
+  return `${base} ${index}`;
 }
 
 function cloneLayerMask(mask?: LayerMask | null): LayerMask | null {
@@ -153,6 +169,7 @@ export interface ModalStates {
   newProject: boolean;
   resizeImage: boolean;
   exportImage: boolean;
+  batchProcess: boolean;
   shortcuts: boolean;
   privacy: boolean;
   editingTextLayerId: string | null;
@@ -248,7 +265,14 @@ interface EditorStoreState {
   updateLayer: (layerId: string, patch: Partial<Layer>, historyLabel?: string) => void;
   updateLayerEffects: (
     layerId: string,
-    patch: { dropShadow?: Partial<DropShadowEffect>; outerGlow?: Partial<OuterGlowEffect> },
+    patch: {
+      dropShadow?: Partial<DropShadowEffect>;
+      outerGlow?: Partial<OuterGlowEffect>;
+      stroke?: Partial<StrokeEffect>;
+      colorOverlay?: Partial<ColorOverlayEffect>;
+      innerShadow?: Partial<InnerShadowEffect>;
+      innerGlow?: Partial<InnerGlowEffect>;
+    },
     commitLabel?: string
   ) => void;
   flipActiveLayer: (direction: 'horizontal' | 'vertical') => void;
@@ -450,6 +474,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     newProject: false,
     resizeImage: false,
     exportImage: false,
+    batchProcess: false,
     shortcuts: false,
     privacy: false,
     editingTextLayerId: null,
@@ -1192,7 +1217,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       (doc) => {
         const layer: RasterLayer = {
           id: makeId('layer'),
-          name: name || `Layer ${doc.layers.length + 1}`,
+          name: name || nextNumberedName(doc.layers, 'Layer'),
           type: 'raster',
           visible: true,
           locked: false,
@@ -1225,7 +1250,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       (doc) => {
         const group: GroupLayer = {
           id: makeId('group'),
-          name: name || `Group ${doc.layers.filter((l) => l.type === 'group').length + 1}`,
+          name: name || nextNumberedName(doc.layers, 'Group'),
           type: 'group',
           visible: true,
           locked: false,
@@ -1462,9 +1487,10 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       get,
       set,
       (doc) => {
+        const baseName = labelMap[shapeKind];
         const layer: ShapeLayer = {
           id: makeId('shape'),
-          name: `${labelMap[shapeKind]} ${doc.layers.length + 1}`,
+          name: nextNumberedName(doc.layers, baseName),
           type: 'shape',
           visible: true,
           locked: false,
@@ -1526,6 +1552,10 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
           const current: LayerEffects = {
             dropShadow: { ...DEFAULT_DROP_SHADOW, ...(l.effects?.dropShadow ?? {}) },
             outerGlow: { ...DEFAULT_OUTER_GLOW, ...(l.effects?.outerGlow ?? {}) },
+            stroke: { ...DEFAULT_STROKE, ...(l.effects?.stroke ?? {}) },
+            colorOverlay: { ...DEFAULT_COLOR_OVERLAY, ...(l.effects?.colorOverlay ?? {}) },
+            innerShadow: { ...DEFAULT_INNER_SHADOW, ...(l.effects?.innerShadow ?? {}) },
+            innerGlow: { ...DEFAULT_INNER_GLOW, ...(l.effects?.innerGlow ?? {}) },
           };
           const nextEffects: LayerEffects = {
             dropShadow: patch.dropShadow
@@ -1534,6 +1564,16 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
             outerGlow: patch.outerGlow
               ? { ...current.outerGlow, ...patch.outerGlow }
               : current.outerGlow,
+            stroke: patch.stroke ? { ...current.stroke, ...patch.stroke } : current.stroke,
+            colorOverlay: patch.colorOverlay
+              ? { ...current.colorOverlay, ...patch.colorOverlay }
+              : current.colorOverlay,
+            innerShadow: patch.innerShadow
+              ? { ...current.innerShadow, ...patch.innerShadow }
+              : current.innerShadow,
+            innerGlow: patch.innerGlow
+              ? { ...current.innerGlow, ...patch.innerGlow }
+              : current.innerGlow,
           };
           return { ...l, effects: nextEffects };
         }),

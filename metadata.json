@@ -1,8 +1,6 @@
 {
-  "name": "LocalPixel Studio",
+  "name": "GStudio",
   "description": "Your images. Your device. Your control. A privacy-first, offline-capable local image editing studio.",
   "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
+  "majorCapabilities": []
 }

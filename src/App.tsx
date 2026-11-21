@@ -5,6 +5,7 @@ import { CanvasWorkspace } from './components/CanvasWorkspace';
 import { DocumentTabs } from './components/DocumentTabs';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { LeftToolSidebar } from './components/LeftToolSidebar';
+import { BatchProcessModal } from './components/modals/BatchProcessModal';
 import { ExportModal } from './components/modals/ExportModal';
 import { NewProjectModal } from './components/modals/NewProjectModal';
 import { ResizeImageModal } from './components/modals/ResizeImageModal';
@@ -496,6 +497,7 @@ function StudioShell() {
       <NewProjectModal />
       <ResizeImageModal />
       <ExportModal />
+      <BatchProcessModal />
       <ShortcutsPrivacyModal />
       <TextEditModal />
 

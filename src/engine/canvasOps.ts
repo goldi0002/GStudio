@@ -6,15 +6,19 @@ import {
 import type {
   Adjustments,
   BlendMode,
+  ColorOverlayEffect,
   CropRect,
   DocumentState,
   DropShadowEffect,
   GroupLayer,
   HistoryLayerSnapshot,
+  InnerGlowEffect,
+  InnerShadowEffect,
   Layer,
   LayerEffects,
   LayerMask,
   OuterGlowEffect,
+  StrokeEffect,
   RasterLayer,
   SelectionPoint,
   SelectionState,
@@ -40,9 +44,45 @@ export const DEFAULT_OUTER_GLOW: OuterGlowEffect = {
   spread: 2,
 };
 
+export const DEFAULT_STROKE: StrokeEffect = {
+  enabled: false,
+  color: '#FFFFFF',
+  opacity: 100,
+  width: 3,
+  position: 'outside',
+};
+
+export const DEFAULT_COLOR_OVERLAY: ColorOverlayEffect = {
+  enabled: false,
+  color: '#0A84FF',
+  opacity: 100,
+  blendMode: 'normal',
+};
+
+export const DEFAULT_INNER_SHADOW: InnerShadowEffect = {
+  enabled: false,
+  color: '#000000',
+  opacity: 55,
+  blur: 12,
+  distance: 6,
+  angle: 135,
+};
+
+export const DEFAULT_INNER_GLOW: InnerGlowEffect = {
+  enabled: false,
+  color: '#FFFFFF',
+  opacity: 60,
+  blur: 14,
+  spread: 2,
+};
+
 export const DEFAULT_LAYER_EFFECTS: LayerEffects = {
   dropShadow: DEFAULT_DROP_SHADOW,
   outerGlow: DEFAULT_OUTER_GLOW,
+  stroke: DEFAULT_STROKE,
+  colorOverlay: DEFAULT_COLOR_OVERLAY,
+  innerShadow: DEFAULT_INNER_SHADOW,
+  innerGlow: DEFAULT_INNER_GLOW,
 };
 
 export function cloneLayerEffects(effects?: LayerEffects | null): LayerEffects | null {
@@ -50,11 +90,23 @@ export function cloneLayerEffects(effects?: LayerEffects | null): LayerEffects |
   return {
     dropShadow: { ...DEFAULT_DROP_SHADOW, ...(effects.dropShadow ?? {}) },
     outerGlow: { ...DEFAULT_OUTER_GLOW, ...(effects.outerGlow ?? {}) },
+    stroke: { ...DEFAULT_STROKE, ...(effects.stroke ?? {}) },
+    colorOverlay: { ...DEFAULT_COLOR_OVERLAY, ...(effects.colorOverlay ?? {}) },
+    innerShadow: { ...DEFAULT_INNER_SHADOW, ...(effects.innerShadow ?? {}) },
+    innerGlow: { ...DEFAULT_INNER_GLOW, ...(effects.innerGlow ?? {}) },
   };
 }
 
 export function hasActiveLayerEffects(effects?: LayerEffects | null): boolean {
-  return Boolean(effects && (effects.dropShadow?.enabled || effects.outerGlow?.enabled));
+  if (!effects) return false;
+  return Boolean(
+    effects.dropShadow?.enabled ||
+      effects.outerGlow?.enabled ||
+      effects.stroke?.enabled ||
+      effects.colorOverlay?.enabled ||
+      effects.innerShadow?.enabled ||
+      effects.innerGlow?.enabled
+  );
 }
 
 export function rotatePointAroundCenter(
@@ -294,7 +346,121 @@ function compositeLayerEffectsToContext(
     fctx.restore();
   }
 
+  // Layer content sits above the outer effects and below the inner ones.
   fctx.drawImage(contentCanvas, 0, 0);
+
+  // Color overlay — recolors the layer while preserving its alpha shape.
+  const colorOverlay = effects?.colorOverlay;
+  if (colorOverlay?.enabled) {
+    const overlayCanvas = createCanvas(docW, docH);
+    const octx = overlayCanvas.getContext('2d');
+    if (octx) {
+      octx.drawImage(contentCanvas, 0, 0);
+      octx.globalAlpha = Math.max(0, Math.min(1, colorOverlay.opacity / 100));
+      octx.globalCompositeOperation = mapBlendMode(colorOverlay.blendMode);
+      octx.fillStyle = colorOverlay.color;
+      octx.fillRect(0, 0, docW, docH);
+      octx.globalAlpha = 1;
+      octx.globalCompositeOperation = 'destination-in';
+      octx.drawImage(contentCanvas, 0, 0);
+      fctx.drawImage(overlayCanvas, 0, 0);
+    }
+  }
+
+  // Stroke — a band just outside or just inside the layer silhouette.
+  const stroke = effects?.stroke;
+  if (stroke?.enabled && stroke.width > 0) {
+    const bandCanvas = createCanvas(docW, docH);
+    const bctx = bandCanvas.getContext('2d');
+    if (bctx) {
+      const width = Math.max(1, stroke.width);
+      const angles = Math.max(16, Math.min(96, Math.ceil(width * 4)));
+
+      if (stroke.position === 'inside') {
+        // Erode the silhouette, then keep the difference as the inner band.
+        const eroded = createCanvas(docW, docH);
+        const ectx = eroded.getContext('2d');
+        if (ectx) {
+          ectx.drawImage(contentCanvas, 0, 0);
+          ectx.globalCompositeOperation = 'destination-in';
+          for (let i = 0; i < angles; i += 1) {
+            const angle = (i / angles) * Math.PI * 2;
+            ectx.drawImage(
+              contentCanvas,
+              Math.cos(angle) * width,
+              Math.sin(angle) * width
+            );
+          }
+          bctx.drawImage(contentCanvas, 0, 0);
+          bctx.globalCompositeOperation = 'destination-out';
+          bctx.drawImage(eroded, 0, 0);
+        }
+      } else {
+        // Dilate the silhouette, then remove the original to leave the outer band.
+        for (let i = 0; i < angles; i += 1) {
+          const angle = (i / angles) * Math.PI * 2;
+          bctx.drawImage(contentCanvas, Math.cos(angle) * width, Math.sin(angle) * width);
+        }
+        bctx.globalCompositeOperation = 'destination-out';
+        bctx.drawImage(contentCanvas, 0, 0);
+      }
+
+      const [r, g, b] = hexToRgba(stroke.color, 255);
+      const alpha = Math.max(0, Math.min(1, stroke.opacity / 100));
+      bctx.globalCompositeOperation = 'source-in';
+      bctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+      bctx.fillRect(0, 0, docW, docH);
+      fctx.drawImage(bandCanvas, 0, 0);
+    }
+  }
+
+  // Inner shadow — shadow cast by the layer edge onto its own interior.
+  const innerShadow = effects?.innerShadow;
+  if (innerShadow?.enabled) {
+    const innerCanvas = createCanvas(docW, docH);
+    const ictx = innerCanvas.getContext('2d');
+    if (ictx) {
+      const [r, g, b] = hexToRgba(innerShadow.color, 255);
+      const alpha = Math.max(0, Math.min(1, innerShadow.opacity / 100));
+      const { offsetX, offsetY } = computeShadowOffset(
+        innerShadow.distance,
+        innerShadow.angle
+      );
+      ictx.drawImage(contentCanvas, 0, 0);
+      ictx.globalCompositeOperation = 'source-atop';
+      ictx.shadowColor = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+      ictx.shadowBlur = Math.max(0, innerShadow.blur);
+      ictx.shadowOffsetX = -shiftX + offsetX;
+      ictx.shadowOffsetY = offsetY;
+      ictx.drawImage(contentCanvas, shiftX, 0);
+      fctx.drawImage(innerCanvas, 0, 0);
+    }
+  }
+
+  // Inner glow — light spilling inward from the layer edge.
+  const innerGlow = effects?.innerGlow;
+  if (innerGlow?.enabled) {
+    const innerCanvas = createCanvas(docW, docH);
+    const ictx = innerCanvas.getContext('2d');
+    if (ictx) {
+      const [r, g, b] = hexToRgba(innerGlow.color, 255);
+      const alpha = Math.max(0, Math.min(1, innerGlow.opacity / 100));
+      const passes = innerGlow.spread > 0 ? 2 : 1;
+      ictx.drawImage(contentCanvas, 0, 0);
+      ictx.globalCompositeOperation = 'source-atop';
+      ictx.shadowColor = `rgba(${r}, ${g}, ${b}, ${passes > 1 ? Math.min(1, alpha * 0.7) : alpha})`;
+      ictx.shadowBlur = Math.max(1, innerGlow.blur);
+      ictx.shadowOffsetX = -shiftX;
+      ictx.shadowOffsetY = 0;
+      for (let i = 0; i < passes; i += 1) {
+        const spread = i === 0 ? 0 : Math.max(1, innerGlow.spread);
+        ictx.shadowOffsetX = -shiftX + (i === 0 ? 0 : spread);
+        ictx.shadowOffsetY = i === 0 ? 0 : spread;
+        ictx.drawImage(contentCanvas, shiftX, 0);
+      }
+      fctx.drawImage(innerCanvas, 0, 0);
+    }
+  }
 
   ctx.save();
   ctx.globalAlpha = Math.max(0, Math.min(1, layer.opacity / 100));

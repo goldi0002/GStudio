@@ -29,7 +29,14 @@ import {
   isDefaultAdjustments,
   isDefaultFilters,
 } from '../engine/adjustments';
-import { DEFAULT_DROP_SHADOW, DEFAULT_OUTER_GLOW } from '../engine/canvasOps';
+import {
+  DEFAULT_COLOR_OVERLAY,
+  DEFAULT_DROP_SHADOW,
+  DEFAULT_INNER_GLOW,
+  DEFAULT_INNER_SHADOW,
+  DEFAULT_OUTER_GLOW,
+  DEFAULT_STROKE,
+} from '../engine/canvasOps';
 import { useEditorStore } from '../store/useEditorStore';
 import type { Adjustments, BlendMode, Layer } from '../types/editor';
 import { CurvesLevelsPanel } from './CurvesLevelsPanel';
@@ -48,6 +55,37 @@ const BLEND_MODES: Array<{ value: BlendMode; label: string }> = [
   { value: 'difference', label: 'Difference' },
   { value: 'exclusion', label: 'Exclusion' },
 ];
+
+const EffectRange: React.FC<{
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  suffix?: string;
+  disabled?: boolean;
+  onChange: (value: number) => void;
+  onCommit?: () => void;
+}> = ({ label, value, min, max, suffix = '', disabled, onChange, onCommit }) => (
+  <div>
+    <div className="flex justify-between text-[10px] text-[var(--lp-text-secondary)]">
+      <span>{label}</span>
+      <span className="font-mono-tabular">
+        {value}
+        {suffix}
+      </span>
+    </div>
+    <input
+      type="range"
+      min={min}
+      max={max}
+      disabled={disabled}
+      value={value}
+      onChange={(e) => onChange(Number(e.target.value))}
+      onPointerUp={onCommit}
+      className="lp-slider w-full"
+    />
+  </div>
+);
 
 const BASE_TONE_RESET: Partial<Adjustments> = {
   brightness: 0,
@@ -1059,6 +1097,22 @@ export const RightInspector: React.FC = () => {
             ...DEFAULT_OUTER_GLOW,
             ...(activeLayer.effects?.outerGlow ?? {}),
           };
+          const stroke = {
+            ...DEFAULT_STROKE,
+            ...(activeLayer.effects?.stroke ?? {}),
+          };
+          const colorOverlay = {
+            ...DEFAULT_COLOR_OVERLAY,
+            ...(activeLayer.effects?.colorOverlay ?? {}),
+          };
+          const innerShadow = {
+            ...DEFAULT_INNER_SHADOW,
+            ...(activeLayer.effects?.innerShadow ?? {}),
+          };
+          const innerGlow = {
+            ...DEFAULT_INNER_GLOW,
+            ...(activeLayer.effects?.innerGlow ?? {}),
+          };
           return (
             <div
               className="pt-2.5 border-t space-y-2.5 text-[11px]"
@@ -1290,6 +1344,339 @@ export const RightInspector: React.FC = () => {
                         />
                       </div>
                     </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Stroke */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      disabled={activeLayer.locked}
+                      checked={stroke.enabled}
+                      onChange={(e) =>
+                        updateLayerEffects(
+                          activeLayer.id,
+                          { stroke: { enabled: e.target.checked } },
+                          e.target.checked ? 'Enable Stroke' : 'Disable Stroke'
+                        )
+                      }
+                    />
+                    <span>Stroke</span>
+                  </label>
+                  {stroke.enabled && (
+                    <input
+                      type="color"
+                      disabled={activeLayer.locked}
+                      value={stroke.color}
+                      onChange={(e) =>
+                        updateLayerEffects(
+                          activeLayer.id,
+                          { stroke: { color: e.target.value } },
+                          'Stroke Color'
+                        )
+                      }
+                      className="w-6 h-5 rounded border bg-transparent cursor-pointer"
+                      style={{ borderColor: 'var(--lp-border)' }}
+                    />
+                  )}
+                </div>
+                {stroke.enabled && (
+                  <div className="pl-4 space-y-1.5">
+                    <div className="flex items-center gap-1">
+                      {(['outside', 'inside'] as const).map((position) => (
+                        <button
+                          key={position}
+                          type="button"
+                          disabled={activeLayer.locked}
+                          onClick={() =>
+                            updateLayerEffects(
+                              activeLayer.id,
+                              { stroke: { position } },
+                              'Stroke Position'
+                            )
+                          }
+                          className={`flex-1 py-1 rounded border text-[10px] capitalize cursor-pointer ${
+                            stroke.position === position
+                              ? 'bg-[#0A84FF] text-white border-[#0A84FF]'
+                              : 'hover:bg-[var(--lp-hover)]'
+                          }`}
+                          style={{
+                            borderColor:
+                              stroke.position === position ? '#0A84FF' : 'var(--lp-border)',
+                          }}
+                        >
+                          {position}
+                        </button>
+                      ))}
+                    </div>
+                    <EffectRange
+                      label="Width"
+                      value={stroke.width}
+                      min={1}
+                      max={40}
+                      suffix="px"
+                      disabled={activeLayer.locked}
+                      onChange={(v) =>
+                        updateLayerEffects(activeLayer.id, { stroke: { width: v } })
+                      }
+                      onCommit={() => commitAdjustmentsHistory('Stroke Width')}
+                    />
+                    <EffectRange
+                      label="Opacity"
+                      value={stroke.opacity}
+                      min={1}
+                      max={100}
+                      suffix="%"
+                      disabled={activeLayer.locked}
+                      onChange={(v) =>
+                        updateLayerEffects(activeLayer.id, { stroke: { opacity: v } })
+                      }
+                      onCommit={() => commitAdjustmentsHistory('Stroke Opacity')}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Color Overlay */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      disabled={activeLayer.locked}
+                      checked={colorOverlay.enabled}
+                      onChange={(e) =>
+                        updateLayerEffects(
+                          activeLayer.id,
+                          { colorOverlay: { enabled: e.target.checked } },
+                          e.target.checked ? 'Enable Color Overlay' : 'Disable Color Overlay'
+                        )
+                      }
+                    />
+                    <span>Color Overlay</span>
+                  </label>
+                  {colorOverlay.enabled && (
+                    <input
+                      type="color"
+                      disabled={activeLayer.locked}
+                      value={colorOverlay.color}
+                      onChange={(e) =>
+                        updateLayerEffects(
+                          activeLayer.id,
+                          { colorOverlay: { color: e.target.value } },
+                          'Color Overlay Color'
+                        )
+                      }
+                      className="w-6 h-5 rounded border bg-transparent cursor-pointer"
+                      style={{ borderColor: 'var(--lp-border)' }}
+                    />
+                  )}
+                </div>
+                {colorOverlay.enabled && (
+                  <div className="pl-4 space-y-1.5">
+                    <EffectRange
+                      label="Opacity"
+                      value={colorOverlay.opacity}
+                      min={1}
+                      max={100}
+                      suffix="%"
+                      disabled={activeLayer.locked}
+                      onChange={(v) =>
+                        updateLayerEffects(activeLayer.id, { colorOverlay: { opacity: v } })
+                      }
+                      onCommit={() => commitAdjustmentsHistory('Color Overlay Opacity')}
+                    />
+                    <label className="flex items-center justify-between gap-2 text-[10px] text-[var(--lp-text-secondary)]">
+                      <span>Blend</span>
+                      <select
+                        value={colorOverlay.blendMode}
+                        disabled={activeLayer.locked}
+                        onChange={(e) =>
+                          updateLayerEffects(
+                            activeLayer.id,
+                            { colorOverlay: { blendMode: e.target.value as BlendMode } },
+                            'Color Overlay Blend'
+                          )
+                        }
+                        className="h-6 rounded border bg-transparent px-1 text-[10px] cursor-pointer"
+                        style={{ borderColor: 'var(--lp-border)' }}
+                      >
+                        {BLEND_MODES.map((mode) => (
+                          <option key={mode.value} value={mode.value}>
+                            {mode.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                )}
+              </div>
+
+              {/* Inner Shadow */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      disabled={activeLayer.locked}
+                      checked={innerShadow.enabled}
+                      onChange={(e) =>
+                        updateLayerEffects(
+                          activeLayer.id,
+                          { innerShadow: { enabled: e.target.checked } },
+                          e.target.checked ? 'Enable Inner Shadow' : 'Disable Inner Shadow'
+                        )
+                      }
+                    />
+                    <span>Inner Shadow</span>
+                  </label>
+                  {innerShadow.enabled && (
+                    <input
+                      type="color"
+                      disabled={activeLayer.locked}
+                      value={innerShadow.color}
+                      onChange={(e) =>
+                        updateLayerEffects(
+                          activeLayer.id,
+                          { innerShadow: { color: e.target.value } },
+                          'Inner Shadow Color'
+                        )
+                      }
+                      className="w-6 h-5 rounded border bg-transparent cursor-pointer"
+                      style={{ borderColor: 'var(--lp-border)' }}
+                    />
+                  )}
+                </div>
+                {innerShadow.enabled && (
+                  <div className="pl-4 space-y-1.5">
+                    <EffectRange
+                      label="Opacity"
+                      value={innerShadow.opacity}
+                      min={1}
+                      max={100}
+                      suffix="%"
+                      disabled={activeLayer.locked}
+                      onChange={(v) =>
+                        updateLayerEffects(activeLayer.id, { innerShadow: { opacity: v } })
+                      }
+                      onCommit={() => commitAdjustmentsHistory('Inner Shadow Opacity')}
+                    />
+                    <EffectRange
+                      label="Blur"
+                      value={innerShadow.blur}
+                      min={0}
+                      max={64}
+                      suffix="px"
+                      disabled={activeLayer.locked}
+                      onChange={(v) =>
+                        updateLayerEffects(activeLayer.id, { innerShadow: { blur: v } })
+                      }
+                      onCommit={() => commitAdjustmentsHistory('Inner Shadow Blur')}
+                    />
+                    <EffectRange
+                      label="Distance"
+                      value={innerShadow.distance}
+                      min={0}
+                      max={80}
+                      suffix="px"
+                      disabled={activeLayer.locked}
+                      onChange={(v) =>
+                        updateLayerEffects(activeLayer.id, { innerShadow: { distance: v } })
+                      }
+                      onCommit={() => commitAdjustmentsHistory('Inner Shadow Distance')}
+                    />
+                    <EffectRange
+                      label="Angle"
+                      value={innerShadow.angle}
+                      min={-180}
+                      max={180}
+                      suffix="°"
+                      disabled={activeLayer.locked}
+                      onChange={(v) =>
+                        updateLayerEffects(activeLayer.id, { innerShadow: { angle: v } })
+                      }
+                      onCommit={() => commitAdjustmentsHistory('Inner Shadow Angle')}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Inner Glow */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      disabled={activeLayer.locked}
+                      checked={innerGlow.enabled}
+                      onChange={(e) =>
+                        updateLayerEffects(
+                          activeLayer.id,
+                          { innerGlow: { enabled: e.target.checked } },
+                          e.target.checked ? 'Enable Inner Glow' : 'Disable Inner Glow'
+                        )
+                      }
+                    />
+                    <span>Inner Glow</span>
+                  </label>
+                  {innerGlow.enabled && (
+                    <input
+                      type="color"
+                      disabled={activeLayer.locked}
+                      value={innerGlow.color}
+                      onChange={(e) =>
+                        updateLayerEffects(
+                          activeLayer.id,
+                          { innerGlow: { color: e.target.value } },
+                          'Inner Glow Color'
+                        )
+                      }
+                      className="w-6 h-5 rounded border bg-transparent cursor-pointer"
+                      style={{ borderColor: 'var(--lp-border)' }}
+                    />
+                  )}
+                </div>
+                {innerGlow.enabled && (
+                  <div className="pl-4 space-y-1.5">
+                    <EffectRange
+                      label="Opacity"
+                      value={innerGlow.opacity}
+                      min={1}
+                      max={100}
+                      suffix="%"
+                      disabled={activeLayer.locked}
+                      onChange={(v) =>
+                        updateLayerEffects(activeLayer.id, { innerGlow: { opacity: v } })
+                      }
+                      onCommit={() => commitAdjustmentsHistory('Inner Glow Opacity')}
+                    />
+                    <EffectRange
+                      label="Blur"
+                      value={innerGlow.blur}
+                      min={1}
+                      max={64}
+                      suffix="px"
+                      disabled={activeLayer.locked}
+                      onChange={(v) =>
+                        updateLayerEffects(activeLayer.id, { innerGlow: { blur: v } })
+                      }
+                      onCommit={() => commitAdjustmentsHistory('Inner Glow Blur')}
+                    />
+                    <EffectRange
+                      label="Spread"
+                      value={innerGlow.spread}
+                      min={0}
+                      max={24}
+                      suffix="px"
+                      disabled={activeLayer.locked}
+                      onChange={(v) =>
+                        updateLayerEffects(activeLayer.id, { innerGlow: { spread: v } })
+                      }
+                      onCommit={() => commitAdjustmentsHistory('Inner Glow Spread')}
+                    />
                   </div>
                 )}
               </div>
