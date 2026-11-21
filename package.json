@@ -1,7 +1,7 @@
 {
-  "name": "react-example",
+  "name": "gstudio",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
@@ -10,6 +10,7 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "fixtures": "bun scripts/make-fixtures.ts",
+    "test": "bun src/engine/engine.test.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {
