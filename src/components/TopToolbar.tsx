@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { BrandMark } from './BrandMark';
 import { PWAInstallButton } from './PWAInstallButton';
+import { requestCloseDocument } from '../hooks/useUnsavedChangesGuard';
 import { decodeImageFile, pickLocalFiles } from '../persistence/fileAccess';
 import { useEditorStore } from '../store/useEditorStore';
 import type { SerializedProject } from '../types/editor';
@@ -187,7 +188,7 @@ export const TopToolbar: React.FC = () => {
         label: 'Close Document',
         shortcut: '⌘W',
         disabled: !activeDoc,
-        action: () => activeDoc && closeDocument(activeDoc.id),
+        action: () => activeDoc && requestCloseDocument(activeDoc.id),
       },
     ],
     edit: [

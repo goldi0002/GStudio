@@ -342,3 +342,25 @@ export async function toggleEffect(page: Page, name: string): Promise<void> {
   await page.getByRole('checkbox', { name }).last().click();
   await page.waitForTimeout(200);
 }
+
+/**
+ * Close a document tab. Confirms the unsaved-changes dialog when it appears
+ * (dirty documents) or just closes the tab for clean ones.
+ */
+export async function closeDocumentTab(
+  page: Page,
+  name: string,
+  choice: 'discard' | 'cancel' = 'discard'
+): Promise<void> {
+  await page.getByRole('button', { name: `Close ${name}` }).click();
+  const dialog = page.getByRole('dialog', { name: 'Unsaved Changes' });
+  const prompted = await dialog
+    .waitFor({ state: 'visible', timeout: 500 })
+    .then(() => true)
+    .catch(() => false);
+  if (prompted) {
+    await dialog
+      .getByRole('button', { name: choice === 'discard' ? 'Discard & Close' : 'Cancel' })
+      .click();
+  }
+}

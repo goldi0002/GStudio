@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import {
   blurActive,
+  closeDocumentTab,
   collectPageErrors,
   createBlankProject,
   createNewDocument,
@@ -45,7 +46,7 @@ test.describe('Multi-document tabs', () => {
     await zoomActualPixels(page);
     await createNewDocument(page, { name: 'Beta', width: 320, height: 240 });
 
-    await page.getByRole('button', { name: 'Close Beta' }).click();
+    await closeDocumentTab(page, 'Beta');
     await expect(page.getByRole('button', { name: 'Close Beta' })).toHaveCount(0);
     await expect(page.getByRole('spinbutton', { name: 'Width' })).toHaveValue('600');
 
@@ -58,8 +59,12 @@ test.describe('Multi-document tabs', () => {
     await zoomActualPixels(page);
     await createNewDocument(page, { name: 'Beta', width: 320, height: 240 });
 
+    // Close once the new document's autosave has actually persisted it, so the
+    // test does not race the debounce timer.
+    await expect(page.getByText('Saved locally', { exact: true })).toBeVisible();
     await blurActive(page);
     await page.keyboard.press('Control+w');
+    await expect(page.getByRole('dialog', { name: 'Unsaved Changes' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Close Beta' })).toHaveCount(0);
     await expect(page.getByRole('spinbutton', { name: 'Width' })).toHaveValue('600');
 

@@ -1,6 +1,7 @@
 import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Upload } from 'lucide-react';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { requestCloseDocument } from './hooks/useUnsavedChangesGuard';
 import { LazyModals } from './components/modals/LazyModals';
 import { TopToolbar } from './components/TopToolbar';
 import { WelcomeScreen } from './components/WelcomeScreen';
@@ -55,7 +56,6 @@ function StudioShell() {
     setZoom,
     requestFitZoom,
     openModal,
-    closeDocument,
     saveActiveDocumentNow,
     saveProjectFileAs,
     openDecodedImage,
@@ -137,7 +137,7 @@ function StudioShell() {
       }
       if (mod && key === 'w' && view === 'editor' && activeDocumentId) {
         e.preventDefault();
-        closeDocument(activeDocumentId);
+        requestCloseDocument(activeDocumentId);
         return;
       }
       if (mod && key === 'j' && view === 'editor' && activeDocumentId) {
@@ -312,7 +312,6 @@ function StudioShell() {
     undo,
     redo,
     openModal,
-    closeDocument,
     openDecodedImage,
     saveActiveDocumentNow,
     saveProjectFileAs,
