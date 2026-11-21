@@ -135,6 +135,8 @@ export const CanvasWorkspace: React.FC = () => {
   // Offscreen cached composites
   const beforeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const afterCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  // "Before" for the compare views: like beforeCanvasRef but also without adjustment layers.
+  const compareCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const adjustVersionRef = useRef(0);
   const cloneAlignedOffsetRef = useRef<{ dx: number; dy: number } | null>(null);
 
@@ -287,6 +289,10 @@ export const CanvasWorkspace: React.FC = () => {
       doc.layers
     );
     beforeCanvasRef.current = unadjusted;
+    compareCanvasRef.current =
+      viewportSettings.beforeAfterMode !== 'off' && doc.layers.some((l) => l.type === 'adjustment')
+        ? compositeLayersToCanvas(doc.width, doc.height, doc.backgroundColor, doc.layers, undefined, true)
+        : unadjusted;
 
     if (isDefaultAdjustments(doc.adjustments)) {
       afterCanvasRef.current = unadjusted;
@@ -309,7 +315,15 @@ export const CanvasWorkspace: React.FC = () => {
       afterCanvasRef.current = outCanvas;
       setRenderTick((t) => t + 1);
     });
-  }, [doc, doc?.layers, doc?.adjustments, doc?.width, doc?.height, doc?.backgroundColor]);
+  }, [
+    doc,
+    doc?.layers,
+    doc?.adjustments,
+    doc?.width,
+    doc?.height,
+    doc?.backgroundColor,
+    viewportSettings.beforeAfterMode,
+  ]);
 
   // Helper: convert screen coordinates (relative to container) <-> document coordinates
   const getArtboardOrigin = useCallback(() => {
@@ -397,7 +411,7 @@ export const CanvasWorkspace: React.FC = () => {
 
     // Draw composited bitmap
     const afterCanvas = afterCanvasRef.current;
-    const beforeCanvas = beforeCanvasRef.current;
+    const beforeCanvas = compareCanvasRef.current ?? beforeCanvasRef.current;
     ctx.imageSmoothingEnabled = doc.zoom < 2.5;
     ctx.imageSmoothingQuality = 'high';
 

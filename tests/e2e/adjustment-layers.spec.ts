@@ -1,5 +1,15 @@
 import { test, expect } from '@playwright/test';
-import { blurActive, canvasStats, collectPageErrors, evidence, openSample } from './helpers';
+import {
+  blurActive,
+  canvasStats,
+  collectPageErrors,
+  createBlankProject,
+  evidence,
+  openSample,
+  pixelAtOffset,
+  setRangeByLabel,
+  zoomActualPixels,
+} from './helpers';
 
 test.describe('Adjustment layers', () => {
   test('an adjustment layer edits non-destructively and supports undo and layer targeting', async ({
@@ -50,6 +60,22 @@ test.describe('Adjustment layers', () => {
 
     await page.locator('[data-layer-row]:not([data-layer-row="Adjustment 1"])').first().click();
     await expect(page.getByTestId('adjustment-target')).toContainText('whole document');
+    expect(errors).toEqual([]);
+  });
+
+  test('before/after compare shows the original without adjustment layers', async ({ page }) => {
+    const errors = collectPageErrors(page);
+    await createBlankProject(page, { background: 'White' });
+    await zoomActualPixels(page);
+    await page.getByRole('button', { name: 'Add Adjustment Layer' }).click();
+    await setRangeByLabel(page, 'Brightness', -100);
+    await expect.poll(async () => (await pixelAtOffset(page, { dx: 0, dy: 0 })).r).toBeLessThan(200);
+
+    await blurActive(page);
+    await page.keyboard.press('\\');
+    await expect(page.getByText('Before (Original)', { exact: true })).toBeVisible();
+    await expect.poll(async () => (await pixelAtOffset(page, { dx: -150, dy: 0 })).r).toBeGreaterThan(220);
+    expect((await pixelAtOffset(page, { dx: 150, dy: 0 })).r).toBeLessThan(200);
     expect(errors).toEqual([]);
   });
 });

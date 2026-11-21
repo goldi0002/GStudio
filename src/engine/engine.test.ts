@@ -27,6 +27,7 @@ import {
   DEFAULT_LAYER_EFFECTS,
   docPointToLayerLocal,
   extractMagicWandMask,
+  hashPixels,
   extractSelectionFromBuffer,
   featherMaskBuffer,
   resizeMaskBuffer,
@@ -895,6 +896,17 @@ import type { AdjustmentLayer, GroupLayer, Layer, RasterLayer, ShapeLayer } from
   assert.equal(cropped.type, 'adjustment');
   assert.equal(cropped.width, 40, 'Crop keeps adjustment layers canvas-sized');
   assert.equal(pickTopmostLayerAtPoint(5, 5, [other, adjLayer])?.id, 's1', 'Adjustment layers are never hit-tested');
+}
+
+// ---- Pixel hashing (adjustment layer cache key) ----
+{
+  const a = new Uint8ClampedArray([1, 2, 3, 255, 4, 5, 6, 255]);
+  const b = new Uint8ClampedArray(a);
+  assert.equal(hashPixels(a), hashPixels(b), 'Identical pixels hash identically');
+  b[5] = 6;
+  assert.notEqual(hashPixels(a), hashPixels(b), 'A one-channel change alters the hash');
+  const view = new Uint8ClampedArray(new Uint8ClampedArray(16).buffer, 4, 8);
+  assert.doesNotThrow(() => hashPixels(view), 'Offset views are supported');
 }
 
 console.log('All GStudio graphics engine unit tests passed.');
