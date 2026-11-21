@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -26,11 +26,19 @@ import {
   Unlock,
 } from 'lucide-react';
 import {
+  cloneAdjustments,
   DEFAULT_FILTERS,
   getTargetAdjustments,
   isDefaultAdjustments,
   isDefaultFilters,
 } from '../engine/adjustments';
+import {
+  browserPresetStorage,
+  deletePreset,
+  loadPresets,
+  savePreset,
+  type AdjustmentPreset,
+} from '../engine/presets';
 import {
   DEFAULT_COLOR_OVERLAY,
   DEFAULT_DROP_SHADOW,
@@ -235,6 +243,7 @@ export const RightInspector: React.FC = () => {
     commitAdjustmentsHistory,
     applyAutoEnhance,
     resetAdjustments,
+    showToast,
     foregroundColor,
     setForegroundColor,
     recentSwatches,
@@ -248,6 +257,12 @@ export const RightInspector: React.FC = () => {
   const [renamingLayerId, setRenamingLayerId] = useState<string | null>(null);
   const [renameText, setRenameText] = useState('');
   const [dragLayerIdx, setDragLayerIdx] = useState<number | null>(null);
+  const [presetName, setPresetName] = useState('');
+  const [savedPresets, setSavedPresets] = useState<AdjustmentPreset[]>([]);
+
+  useEffect(() => {
+    setSavedPresets(loadPresets(browserPresetStorage()));
+  }, []);
 
   const doc = documents.find((d) => d.id === activeDocumentId) ?? null;
   if (!doc) return null;
@@ -310,6 +325,26 @@ export const RightInspector: React.FC = () => {
   const targetAdj = getTargetAdjustments(doc);
   const editingLayerAdj = activeLayer?.type === 'adjustment';
   const filters = targetAdj.filters ?? DEFAULT_FILTERS;
+
+  const handleSavePreset = () => {
+    const saved = savePreset(browserPresetStorage(), presetName, targetAdj);
+    if (!saved) {
+      showToast('Could not save preset. My Presets may be full or storage is unavailable.', 'error');
+      return;
+    }
+    setSavedPresets(loadPresets(browserPresetStorage()));
+    setPresetName('');
+    showToast(`Saved preset “${saved.name}”.`, 'success');
+  };
+
+  const handleApplyPreset = (preset: AdjustmentPreset) => {
+    updateAdjustments(cloneAdjustments(preset.adjustments), `Apply Preset: ${preset.name}`);
+  };
+
+  const handleDeletePreset = (preset: AdjustmentPreset) => {
+    setSavedPresets(deletePreset(browserPresetStorage(), preset.id));
+    showToast(`Deleted preset “${preset.name}”.`, 'info');
+  };
 
   return (
     <aside
@@ -1786,6 +1821,69 @@ export const RightInspector: React.FC = () => {
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* User-saved presets (localStorage only) */}
+          <div className="space-y-1.5">
+            <span className="text-[10px] text-[var(--lp-text-secondary)] block">My Presets</span>
+            <div className="flex items-center gap-1">
+              <input
+                type="text"
+                aria-label="Preset name"
+                placeholder="Preset name"
+                value={presetName}
+                onChange={(e) => setPresetName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleSavePreset();
+                  }
+                }}
+                className="flex-1 min-w-0 px-2 py-1 rounded border bg-[var(--lp-bg)] text-[11px] outline-none focus:border-[#0A84FF]"
+                style={{ borderColor: 'var(--lp-border)' }}
+              />
+              <button
+                type="button"
+                onClick={handleSavePreset}
+                disabled={!presetName.trim()}
+                className="px-2 py-1 rounded border text-[10px] font-medium hover:border-[#0A84FF] hover:text-[#0A84FF] disabled:opacity-40 disabled:hover:border-[var(--lp-border)] disabled:hover:text-inherit cursor-pointer"
+                style={{ borderColor: 'var(--lp-border)' }}
+              >
+                Save preset
+              </button>
+            </div>
+            {savedPresets.length > 0 ? (
+              <ul className="space-y-1">
+                {savedPresets.map((preset) => (
+                  <li key={preset.id} className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => handleApplyPreset(preset)}
+                      title={`Apply preset ${preset.name}`}
+                      className="flex-1 min-w-0 text-left px-2 py-1 rounded border text-[10px] truncate hover:border-[#0A84FF] hover:text-[#0A84FF] transition-colors cursor-pointer"
+                      style={{
+                        backgroundColor: 'var(--lp-panel)',
+                        borderColor: 'var(--lp-border)',
+                      }}
+                    >
+                      {preset.name}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Delete preset ${preset.name}`}
+                      onClick={() => handleDeletePreset(preset)}
+                      className="p-1 rounded text-[var(--lp-text-secondary)] hover:text-[#FF453A] hover:bg-[var(--lp-hover)] cursor-pointer"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-[10px] text-[var(--lp-text-secondary)]">
+                Save the current adjustments to reuse them later.
+              </p>
+            )}
           </div>
 
           <div className="h-px" style={{ backgroundColor: 'var(--lp-border)' }} />
