@@ -2621,6 +2621,96 @@ export function featherMaskBuffer(
   };
 }
 
+/** Sliding-window min (or max) over a 1D line using a monotonic deque: O(n) for any radius. */
+function slidingExtreme(
+  src: Uint8Array,
+  dst: Uint8Array,
+  start: number,
+  stride: number,
+  n: number,
+  r: number,
+  takeMax: boolean
+): void {
+  const idxQ = new Int32Array(n);
+  let head = 0;
+  let tail = 0;
+  let next = 0; // next sample index to push
+  for (let i = 0; i < n; i++) {
+    const hi = Math.min(n - 1, i + r);
+    while (next <= hi) {
+      const v = src[start + next * stride];
+      while (tail > head) {
+        const last = src[start + idxQ[tail - 1] * stride];
+        if (takeMax ? last <= v : last >= v) tail--;
+        else break;
+      }
+      idxQ[tail++] = next++;
+    }
+    while (idxQ[head] < i - r) head++;
+    dst[start + i * stride] = src[start + idxQ[head] * stride];
+  }
+}
+
+/**
+ * Grows (positive `deltaPx`) or shrinks (negative) a selection mask by a square
+ * structuring element of the given radius, so edges move about `deltaPx` pixels.
+ * Works on soft masks too. Pixels outside the image count as unselected when
+ * shrinking, so a selection touching the canvas edge shrinks away from it.
+ */
+export function resizeMaskBuffer(
+  maskData: Uint8Array,
+  width: number,
+  height: number,
+  deltaPx: number
+): { maskData: Uint8Array; bounds: { x: number; y: number; width: number; height: number } } {
+  const r = Math.min(256, Math.round(Math.abs(deltaPx)));
+  const grow = deltaPx > 0;
+  let cur: Uint8Array = new Uint8Array(maskData);
+  if (r > 0 && width > 0 && height > 0) {
+    let src: Uint8Array = cur;
+    if (!grow) {
+      // Pad with a zero border so shrinking erodes inward from the canvas edge.
+      const pw = width + 2 * r;
+      const ph = height + 2 * r;
+      const padded = new Uint8Array(pw * ph);
+      for (let y = 0; y < height; y++) padded.set(maskData.subarray(y * width, (y + 1) * width), (y + r) * pw + r);
+      const tmp = new Uint8Array(pw * ph);
+      for (let y = 0; y < ph; y++) slidingExtreme(padded, tmp, y * pw, 1, pw, r, false);
+      for (let x = 0; x < pw; x++) slidingExtreme(tmp, padded, x, pw, ph, r, false);
+      const out = new Uint8Array(width * height);
+      for (let y = 0; y < height; y++) out.set(padded.subarray((y + r) * pw + r, (y + r) * pw + r + width), y * width);
+      cur = out;
+    } else {
+      const tmp = new Uint8Array(width * height);
+      for (let y = 0; y < height; y++) slidingExtreme(src, tmp, y * width, 1, width, r, true);
+      const out = new Uint8Array(width * height);
+      for (let x = 0; x < width; x++) slidingExtreme(tmp, out, x, width, height, r, true);
+      cur = out;
+    }
+  }
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (cur[y * width + x] > 0) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  return {
+    maskData: cur,
+    bounds:
+      maxX < minX || maxY < minY
+        ? { x: 0, y: 0, width: 0, height: 0 }
+        : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 },
+  };
+}
+
 export function extractSelectionFromBuffer(
   srcRgba: Uint8ClampedArray,
   width: number,

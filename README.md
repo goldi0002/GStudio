@@ -11,8 +11,8 @@ GStudio is a privacy-first image editor that runs entirely in the browser. Nothi
 - **Layers** — raster, text and shape layers with blend modes, opacity, masks and layer styles; duplicate, reorder, nudge, resize and rotate.
 - **Painting** — brush, eraser, paint bucket, linear and radial gradients, eyedropper.
 - **Retouching** — clone stamp and spot healing brush.
-- **Selections** — rectangular and elliptical marquee, lasso, magic wand; invert, fill, and mask from selection.
-- **Adjustments** — exposure, colour and filter controls plus curves and levels, processed in a Web Worker. A before/after split view compares the result with the original.
+- **Selections** — rectangular and elliptical marquee, lasso, magic wand; invert, grow, shrink, feather, fill, and mask from selection.
+- **Adjustments** — exposure, colour and filter controls (including noise reduction) plus curves and levels, processed in a Web Worker. A before/after split view compares the result with the original.
 - **Canvas** — crop, resize, zoom and pan.
 - **Documents** — multiple open images in tabs, drag-and-drop import, clipboard copy/cut/paste, autosave with a Recent Projects list.
 - **Export** — PNG, JPEG, WebP or BMP with size presets for social and print, plus batch processing of many files at once.

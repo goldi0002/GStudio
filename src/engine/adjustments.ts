@@ -39,6 +39,7 @@ export const DEFAULT_FILTERS: FiltersConfig = {
   vignetteMidpoint: 55,
   noise: 0,
   pixelate: 1,
+  denoise: 0,
 };
 
 export const DEFAULT_ADJUSTMENTS: Adjustments = {
@@ -97,7 +98,8 @@ export function isDefaultFilters(filters?: FiltersConfig): boolean {
     filters.blur <= 0 &&
     filters.vignette === 0 &&
     filters.noise <= 0 &&
-    filters.pixelate <= 1
+    filters.pixelate <= 1 &&
+    (filters.denoise ?? 0) <= 0
   );
 }
 
@@ -420,6 +422,64 @@ function applyVignette(
   }
 }
 
+/**
+ * Edge-preserving noise reduction: a bilateral filter whose spatial radius and
+ * colour tolerance both grow with `amount` (0..100). Pixels across a strong edge
+ * get little weight, so flat areas smooth out while edges stay crisp.
+ */
+export function applyDenoise(
+  buf: Uint8ClampedArray,
+  width: number,
+  height: number,
+  amount: number
+): void {
+  const t = Math.max(0, Math.min(100, amount)) / 100;
+  if (t === 0 || width < 3 || height < 3) return;
+  const radius = t > 0.5 ? 2 : 1;
+  const sigmaSpatial = 0.8 + radius * 0.6;
+  const sigmaRange = 8 + t * 52; // colour distance (0..255 per channel) treated as "similar"
+  const src = new Uint8ClampedArray(buf);
+  const invS = 1 / (2 * sigmaSpatial * sigmaSpatial);
+  const invR = 1 / (2 * sigmaRange * sigmaRange);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      if (src[idx + 3] === 0) continue;
+      const r0 = src[idx];
+      const g0 = src[idx + 1];
+      const b0 = src[idx + 2];
+      let wr = 0;
+      let wg = 0;
+      let wb = 0;
+      let wsum = 0;
+      for (let dy = -radius; dy <= radius; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= height) continue;
+        for (let dx = -radius; dx <= radius; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= width) continue;
+          const j = (yy * width + xx) * 4;
+          if (src[j + 3] === 0) continue;
+          const dr = src[j] - r0;
+          const dg = src[j + 1] - g0;
+          const db = src[j + 2] - b0;
+          const w = Math.exp(-(dx * dx + dy * dy) * invS - (dr * dr + dg * dg + db * db) * invR);
+          wr += src[j] * w;
+          wg += src[j + 1] * w;
+          wb += src[j + 2] * w;
+          wsum += w;
+        }
+      }
+      if (wsum > 0) {
+        buf[idx] = clamp255(wr / wsum);
+        buf[idx + 1] = clamp255(wg / wsum);
+        buf[idx + 2] = clamp255(wb / wsum);
+      }
+    }
+  }
+}
+
 function applyNoise(
   buf: Uint8ClampedArray,
   width: number,
@@ -647,6 +707,10 @@ export function applyAdjustmentsToBuffer(
   // 13. Non-destructive Filters (Pixelate -> Gaussian Blur -> Vignette -> Noise)
   const filters = adj.filters;
   if (filters) {
+    // Denoise first so later filters (and film noise) are not smoothed away.
+    if ((filters.denoise ?? 0) > 0) {
+      applyDenoise(dst, width, height, filters.denoise ?? 0);
+    }
     if (filters.pixelate > 1) {
       applyPixelate(dst, width, height, filters.pixelate);
     }

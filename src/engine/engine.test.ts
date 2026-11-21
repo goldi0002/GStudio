@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   applyAdjustmentsToBuffer,
+  applyDenoise,
   buildLevelsLut,
   buildSplineCurveLut,
   computeHistogram,
@@ -24,6 +25,7 @@ import {
   extractMagicWandMask,
   extractSelectionFromBuffer,
   featherMaskBuffer,
+  resizeMaskBuffer,
   fillBufferWithMask,
   hexToRgba,
   invertMaskBuffer,
@@ -758,6 +760,65 @@ import type { GroupLayer, Layer, RasterLayer, ShapeLayer } from '../types/editor
   assert.deepEqual(wide, { x: 250, y: 0, width: 500, height: 500 }, 'Square is clamped to height');
   const half = fitRatioRect(1000, 1000, 2, 400);
   assert.deepEqual(half, { x: 300, y: 400, width: 400, height: 200 });
+}
+
+{
+  // Grow / shrink selection
+  const w = 20;
+  const h = 20;
+  const mask = new Uint8Array(w * h);
+  for (let y = 8; y < 12; y++) for (let x = 8; x < 12; x++) mask[y * w + x] = 255; // 4x4 block
+  const grown = resizeMaskBuffer(mask, w, h, 2);
+  assert.deepEqual(grown.bounds, { x: 6, y: 6, width: 8, height: 8 }, 'Grow adds 2px on each side');
+  assert.equal(grown.maskData[7 * w + 7], 255);
+  const shrunk = resizeMaskBuffer(grown.maskData, w, h, -2);
+  assert.deepEqual(shrunk.bounds, { x: 8, y: 8, width: 4, height: 4 }, 'Shrink undoes grow');
+  const gone = resizeMaskBuffer(mask, w, h, -3);
+  assert.equal(gone.bounds.width, 0, 'Shrinking past the size empties the mask');
+  const edge = new Uint8Array(w * h).fill(255);
+  const edgeShrunk = resizeMaskBuffer(edge, w, h, -2);
+  assert.deepEqual(
+    edgeShrunk.bounds,
+    { x: 2, y: 2, width: 16, height: 16 },
+    'A full-canvas selection shrinks away from the canvas edge'
+  );
+  assert.equal(resizeMaskBuffer(mask, w, h, 0).bounds.width, 4, 'Zero delta is a no-op');
+}
+
+{
+  // Noise reduction smooths flat noise but keeps a hard edge
+  const w = 16;
+  const h = 16;
+  const buf = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const base = x < 8 ? 40 : 215;
+      const n = ((x * 7 + y * 13) % 9) - 4; // deterministic +/-4 noise
+      buf[i] = buf[i + 1] = buf[i + 2] = base + n;
+      buf[i + 3] = 255;
+    }
+  }
+  const spread = (b: Uint8ClampedArray, x0: number, x1: number) => {
+    let lo = 255;
+    let hi = 0;
+    for (let y = 2; y < h - 2; y++) {
+      for (let x = x0; x < x1; x++) {
+        const v = b[(y * w + x) * 4];
+        lo = Math.min(lo, v);
+        hi = Math.max(hi, v);
+      }
+    }
+    return hi - lo;
+  };
+  const before = spread(buf, 1, 6);
+  const out = new Uint8ClampedArray(buf);
+  applyDenoise(out, w, h, 80);
+  assert.ok(spread(out, 1, 6) < before, 'Noise in a flat area is reduced');
+  assert.ok(out[(8 * w + 9) * 4] > 190 && out[(8 * w + 6) * 4] < 70, 'The hard edge is preserved');
+  const same = new Uint8ClampedArray(buf);
+  applyDenoise(same, w, h, 0);
+  assert.deepEqual(same, buf, 'Amount 0 leaves pixels untouched');
 }
 
 console.log('All GStudio graphics engine unit tests passed.');
