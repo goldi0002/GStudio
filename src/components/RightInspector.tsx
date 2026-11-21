@@ -8,8 +8,8 @@ import {
   Copy,
   Eye,
   EyeOff,
-  FlipHorizontal2,
-  FlipVertical2,
+  CaretsToAxisDashedVertical,
+  CaretsToAxisDashedHorizontal,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -907,7 +907,7 @@ export const RightInspector: React.FC = () => {
                   }`}
                   style={{ borderColor: activeLayer.flipX ? undefined : 'var(--lp-border)' }}
                 >
-                  <FlipHorizontal2 className="w-3 h-3" />
+                  <CaretsToAxisDashedVertical className="w-3 h-3" />
                   <span>Flip H</span>
                 </button>
                 <button
@@ -921,7 +921,7 @@ export const RightInspector: React.FC = () => {
                   }`}
                   style={{ borderColor: activeLayer.flipY ? undefined : 'var(--lp-border)' }}
                 >
-                  <FlipVertical2 className="w-3 h-3" />
+                  <CaretsToAxisDashedHorizontal className="w-3 h-3" />
                   <span>Flip V</span>
                 </button>
               </div>

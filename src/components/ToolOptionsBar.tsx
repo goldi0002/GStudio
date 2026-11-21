@@ -6,8 +6,8 @@ import {
   Check,
   Columns2,
   Eye,
-  FlipHorizontal2,
-  FlipVertical2,
+  CaretsToAxisDashedVertical,
+  CaretsToAxisDashedHorizontal,
   Grid3x3,
   ImagePlus,
   Magnet,
@@ -182,7 +182,7 @@ export const ToolOptionsBar: React.FC = () => {
                 }`}
                 style={{ borderColor: activeLayer?.flipX ? undefined : 'var(--lp-border)' }}
               >
-                <FlipHorizontal2 className="w-3.5 h-3.5" />
+                <CaretsToAxisDashedVertical className="w-3.5 h-3.5" />
                 <span>Flip H</span>
               </button>
               <button
@@ -197,7 +197,7 @@ export const ToolOptionsBar: React.FC = () => {
                 }`}
                 style={{ borderColor: activeLayer?.flipY ? undefined : 'var(--lp-border)' }}
               >
-                <FlipVertical2 className="w-3.5 h-3.5" />
+                <CaretsToAxisDashedHorizontal className="w-3.5 h-3.5" />
                 <span>Flip V</span>
               </button>
             </div>
@@ -425,7 +425,7 @@ export const ToolOptionsBar: React.FC = () => {
                 onClick={() => flipActiveDocument('horizontal')}
                 className="p-1 rounded hover:bg-[var(--lp-hover)] cursor-pointer"
               >
-                <FlipHorizontal2 className="w-3.5 h-3.5" />
+                <CaretsToAxisDashedVertical className="w-3.5 h-3.5" />
               </button>
               <button
                 type="button"
@@ -433,7 +433,7 @@ export const ToolOptionsBar: React.FC = () => {
                 onClick={() => flipActiveDocument('vertical')}
                 className="p-1 rounded hover:bg-[var(--lp-hover)] cursor-pointer"
               >
-                <FlipVertical2 className="w-3.5 h-3.5" />
+                <CaretsToAxisDashedHorizontal className="w-3.5 h-3.5" />
               </button>
             </div>
             {cropRect && (
