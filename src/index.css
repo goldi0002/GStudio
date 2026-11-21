@@ -1,0 +1,153 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --lp-bg: #EAECEF;
+  --lp-workspace: #DFE2E7;
+  --lp-sidebar: #F4F5F7;
+  --lp-panel: #FFFFFF;
+  --lp-elevated: #FFFFFF;
+  --lp-border: rgba(0, 0, 0, 0.085);
+  --lp-border-strong: rgba(0, 0, 0, 0.16);
+  --lp-specular: rgba(255, 255, 255, 0.7);
+  --lp-text: #1D1D1F;
+  --lp-text-secondary: #6E6E73;
+  --lp-hover: rgba(0, 0, 0, 0.045);
+  --lp-active-surface: rgba(0, 122, 255, 0.11);
+  --lp-accent: #007AFF;
+  --lp-accent-hover: #0066D6;
+  --lp-checker-a: #E3E5EA;
+  --lp-checker-b: #F4F5F8;
+  --lp-ruler-bg: #E8EAEE;
+  --lp-ruler-tick: rgba(0, 0, 0, 0.34);
+}
+
+.dark {
+  --lp-bg: #161618;
+  --lp-workspace: #1C1C1F;
+  --lp-sidebar: #212124;
+  --lp-panel: #28282C;
+  --lp-elevated: #303036;
+  --lp-border: rgba(255, 255, 255, 0.085);
+  --lp-border-strong: rgba(255, 255, 255, 0.16);
+  --lp-specular: rgba(255, 255, 255, 0.045);
+  --lp-text: #F5F5F7;
+  --lp-text-secondary: #9898A0;
+  --lp-hover: rgba(255, 255, 255, 0.06);
+  --lp-active-surface: rgba(10, 132, 255, 0.17);
+  --lp-accent: #0A84FF;
+  --lp-accent-hover: #2E96FF;
+  --lp-checker-a: #242428;
+  --lp-checker-b: #2E2E33;
+  --lp-ruler-bg: #19191C;
+  --lp-ruler-tick: rgba(255, 255, 255, 0.3);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    background-color: var(--lp-bg);
+    color: var(--lp-text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  .font-mono-tabular {
+    font-family: "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.mac-workspace-well {
+  background-color: var(--lp-workspace);
+  background-image: radial-gradient(
+    ellipse at 50% 45%,
+    rgba(255, 255, 255, 0.025) 0%,
+    rgba(0, 0, 0, 0.12) 100%
+  );
+}
+
+.checkerboard-bg {
+  background-color: var(--lp-checker-a);
+  background-image:
+    linear-gradient(45deg, var(--lp-checker-b) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--lp-checker-b) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--lp-checker-b) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--lp-checker-b) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+/* Custom hairline scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 138, 0.32);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 138, 0.5);
+}
+
+/* Subtle native-feeling macOS range slider */
+input[type="range"].lp-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--lp-border-strong);
+  outline: none;
+}
+
+input[type="range"].lp-slider:focus-visible {
+  box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.4);
+}
+
+input[type="range"].lp-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+input[type="range"].lp-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.14);
+}
+
+input[type="range"].lp-slider::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
