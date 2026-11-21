@@ -39,6 +39,7 @@ export const ToolOptionsBar: React.FC = () => {
     clearSelection,
     cropToSelection,
     featherActiveSelection,
+    resizeActiveSelection,
     applySelectionAsMask,
     fillSelectionWithColor,
     layerViaCopyOrDuplicate,
@@ -59,6 +60,7 @@ export const ToolOptionsBar: React.FC = () => {
   } = useEditorStore();
 
   const [featherRadius, setFeatherRadius] = useState(6);
+  const [resizePx, setResizePx] = useState(4);
 
   const doc = documents.find((d) => d.id === activeDocumentId);
   if (!doc) return null;
@@ -302,6 +304,39 @@ export const ToolOptionsBar: React.FC = () => {
                     style={{ borderColor: 'var(--lp-border)' }}
                   >
                     Feather
+                  </button>
+                </div>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min={1}
+                    max={64}
+                    value={resizePx}
+                    onChange={(e) =>
+                      setResizePx(Math.max(1, Math.min(64, Number(e.target.value) || 1)))
+                    }
+                    aria-label="Grow or shrink amount in pixels"
+                    title="Grow / shrink amount in pixels"
+                    className="w-11 px-1 py-0.5 rounded border bg-transparent font-mono-tabular text-[11px]"
+                    style={{ borderColor: 'var(--lp-border)' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => resizeActiveSelection(resizePx)}
+                    title="Expand selection by the given pixels"
+                    className="px-2 py-0.5 rounded border text-[11px] hover:bg-[var(--lp-hover)] cursor-pointer whitespace-nowrap"
+                    style={{ borderColor: 'var(--lp-border)' }}
+                  >
+                    Grow
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => resizeActiveSelection(-resizePx)}
+                    title="Contract selection by the given pixels"
+                    className="px-2 py-0.5 rounded border text-[11px] hover:bg-[var(--lp-hover)] cursor-pointer whitespace-nowrap"
+                    style={{ borderColor: 'var(--lp-border)' }}
+                  >
+                    Shrink
                   </button>
                 </div>
                 <button

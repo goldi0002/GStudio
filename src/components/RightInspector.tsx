@@ -1909,6 +1909,24 @@ export const RightInspector: React.FC = () => {
 
           <div className="space-y-1">
             <div className="flex items-center justify-between">
+              <span className="text-[var(--lp-text-secondary)]">Noise Reduction</span>
+              <span className="font-mono-tabular">{filters.denoise ?? 0}</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={filters.denoise ?? 0}
+              onChange={(e) => updateFilters({ denoise: Number(e.target.value) })}
+              onPointerUp={() => commitAdjustmentsHistory('Filter: Noise Reduction')}
+              onKeyUp={() => commitAdjustmentsHistory('Filter: Noise Reduction')}
+              className="lp-slider w-full"
+              aria-label="Noise Reduction"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
               <span className="text-[var(--lp-text-secondary)]">Film Noise</span>
               <span className="font-mono-tabular">{filters.noise}</span>
             </div>

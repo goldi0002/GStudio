@@ -22,6 +22,7 @@ import {
   DEFAULT_STROKE,
   extractSelectionFromCanvas,
   featherMaskBuffer,
+  resizeMaskBuffer,
   fillCanvasWithSelectionMask,
   flipLayers,
   invertSelectionState,
@@ -247,6 +248,8 @@ interface EditorStoreState {
   cropToSelection: () => void;
   deleteSelectionOrLayer: () => void;
   featherActiveSelection: (radiusPx: number) => void;
+  /** Positive grows the selection by that many pixels, negative shrinks it. */
+  resizeActiveSelection: (deltaPx: number) => void;
   applySelectionAsMask: (mode?: 'reveal' | 'hide') => void;
   fillSelectionWithColor: (colorHex: string, opacityPercent?: number) => void;
 
@@ -1081,6 +1084,32 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       inverted: false,
     });
     get().showToast(`Feathered selection (${r}px)`, 'info');
+  },
+
+  resizeActiveSelection: (deltaPx) => {
+    const doc = get().documents.find((d) => d.id === get().activeDocumentId);
+    if (!doc?.selection) return;
+    const d = Math.max(-64, Math.min(64, Math.round(deltaPx)));
+    if (d === 0) return;
+    const rawMask = rasterizeSelectionToMaskBuffer(doc.selection, doc.width, doc.height);
+    const { maskData, bounds } = resizeMaskBuffer(rawMask, doc.width, doc.height, d);
+    if (bounds.width <= 0 || bounds.height <= 0) {
+      get().setSelection(null);
+      get().showToast('Selection shrank to nothing.', 'info');
+      return;
+    }
+    get().setSelection({
+      kind: 'mask',
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+      maskData,
+      maskWidth: doc.width,
+      maskHeight: doc.height,
+      inverted: false,
+    });
+    get().showToast(`${d > 0 ? 'Grew' : 'Shrank'} selection by ${Math.abs(d)}px`, 'info');
   },
 
   applySelectionAsMask: (mode = 'reveal') => {

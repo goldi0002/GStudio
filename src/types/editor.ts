@@ -182,6 +182,8 @@ export interface FiltersConfig {
   vignetteMidpoint: number; // 15..90 %
   noise: number; // 0..100
   pixelate: number; // 1..48 px (1 = off)
+  /** Edge-preserving noise reduction, 0..100. Optional: older saved projects omit it. */
+  denoise?: number;
 }
 
 export interface Adjustments {

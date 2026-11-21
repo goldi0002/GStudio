@@ -112,4 +112,25 @@ test.describe('Selections & masks', () => {
     await evidence(page, testInfo, 'mask-from-selection');
     expect(errors).toEqual([]);
   });
+
+  test('grow and shrink resize a selection by the given pixels', async ({ page }) => {
+    const errors = collectPageErrors(page);
+    await createBlankProject(page);
+    await zoomActualPixels(page);
+    await blurActive(page);
+    await page.keyboard.press('m');
+    await dragOnCanvas(page, { dx: -80, dy: -80 }, { dx: 80, dy: 80 });
+
+    const readout = page.locator('span.whitespace-nowrap').filter({ hasText: /^\d+ × \d+ px/ });
+    const width = async () => Number((await readout.innerText()).split('×')[0].trim());
+    const start = await width();
+
+    await page.getByLabel('Grow or shrink amount in pixels').fill('5');
+    await page.getByRole('button', { name: 'Grow', exact: true }).click();
+    await expect.poll(width).toBe(start + 10);
+
+    await page.getByRole('button', { name: 'Shrink', exact: true }).click();
+    await expect.poll(width).toBe(start);
+    expect(errors).toEqual([]);
+  });
 });

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { canvasStats, collectPageErrors, evidence, openSample } from './helpers';
+import { canvasStats, collectPageErrors, evidence, openSample, setRangeByLabel } from './helpers';
 
 test.describe('Adjustments', () => {
   test('Crisp Mono preset desaturates the composite', async ({ page }, testInfo) => {
@@ -32,6 +32,22 @@ test.describe('Adjustments', () => {
     expect(after.colorful).toBeGreaterThan(10);
 
     await evidence(page, testInfo, 'auto-balance');
+    expect(errors).toEqual([]);
+  });
+
+  test('Noise Reduction slider smooths the image without losing it', async ({ page }) => {
+    const errors = collectPageErrors(page);
+    await openSample(page, 'Sunlit Courtyard Study');
+
+    const before = await canvasStats(page);
+    await page.getByRole('button', { name: 'Filters', exact: true }).click();
+    await setRangeByLabel(page, 'Noise Reduction', 100);
+    await page.waitForTimeout(700);
+
+    await expect(page.getByLabel('Noise Reduction')).toHaveValue('100');
+    const after = await canvasStats(page);
+    expect(after.samples).toBe(before.samples);
+    expect(after.colorful).toBeGreaterThan(10);
     expect(errors).toEqual([]);
   });
 });
