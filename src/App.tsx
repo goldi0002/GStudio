@@ -1,23 +1,17 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Upload } from 'lucide-react';
-import { BottomStatusBar } from './components/BottomStatusBar';
-import { CanvasWorkspace } from './components/CanvasWorkspace';
-import { DocumentTabs } from './components/DocumentTabs';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { LeftToolSidebar } from './components/LeftToolSidebar';
-import { BatchProcessModal } from './components/modals/BatchProcessModal';
-import { ExportModal } from './components/modals/ExportModal';
-import { NewProjectModal } from './components/modals/NewProjectModal';
-import { ResizeImageModal } from './components/modals/ResizeImageModal';
-import { ShortcutsPrivacyModal } from './components/modals/ShortcutsPrivacyModal';
-import { TextEditModal } from './components/modals/TextEditModal';
-import { RightInspector } from './components/RightInspector';
-import { ToolOptionsBar } from './components/ToolOptionsBar';
+import { LazyModals } from './components/modals/LazyModals';
 import { TopToolbar } from './components/TopToolbar';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { decodeImageFile, pickLocalFiles } from './persistence/fileAccess';
 import { useEditorStore } from './store/useEditorStore';
 import type { SerializedProject, ToolId } from './types/editor';
+
+// The editor UI is the largest part of the app; load it on demand so the
+// welcome screen renders from a smaller initial bundle.
+const loadEditorView = () => import('./components/EditorView');
+const EditorView = lazy(loadEditorView);
 
 const TOOL_SHORTCUTS: Record<string, ToolId> = {
   v: 'move',
@@ -92,6 +86,18 @@ function StudioShell() {
   useEffect(() => {
     void initializeApp();
   }, [initializeApp]);
+
+  // Warm the editor chunk once the welcome screen is up, so opening an image
+  // does not wait on a fetch.
+  useEffect(() => {
+    const preload = () => void loadEditorView();
+    if (typeof window.requestIdleCallback === 'function') {
+      const id = window.requestIdleCallback(preload);
+      return () => window.cancelIdleCallback(id);
+    }
+    const id = setTimeout(preload, 200);
+    return () => clearTimeout(id);
+  }, []);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -474,32 +480,17 @@ function StudioShell() {
       {view === 'welcome' || !activeDocumentId ? (
         <WelcomeScreen />
       ) : (
-        <>
-          <DocumentTabs />
-          <ToolOptionsBar />
-          <div className="flex-1 flex min-h-0 overflow-hidden">
-            <LeftToolSidebar />
-            <CanvasWorkspace />
-            <div
-              onMouseDown={(e) => {
-                resizingRef.current = { startX: e.clientX, startW: inspectorWidth };
-              }}
-              title="Drag to resize inspector"
-              className="w-1 shrink-0 cursor-col-resize hover:bg-[#0A84FF]/60 transition-colors"
-            />
-            <RightInspector />
-          </div>
-          <BottomStatusBar />
-        </>
+        <Suspense fallback={<div className="flex-1" />}>
+          <EditorView
+            onInspectorResizeStart={(clientX) => {
+              resizingRef.current = { startX: clientX, startW: inspectorWidth };
+            }}
+          />
+        </Suspense>
       )}
 
       {/* Modals */}
-      <NewProjectModal />
-      <ResizeImageModal />
-      <ExportModal />
-      <BatchProcessModal />
-      <ShortcutsPrivacyModal />
-      <TextEditModal />
+      <LazyModals />
 
       {/* Toast Feedback */}
       {toast && (
