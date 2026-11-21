@@ -93,14 +93,14 @@ test.describe('Crop & resize', () => {
     const ratio = page.getByRole('textbox', { name: 'Custom crop ratio' });
     await ratio.fill('2:1');
     await ratio.press('Enter');
-    const size = page.locator('span.font-mono-tabular').filter({ hasText: /^\d+ × \d+$/ });
+    const size = page.getByRole('button', { name: 'Apply' }).locator('xpath=preceding-sibling::span[1]');
     const read = async () => {
       const [w, h] = (await size.innerText()).split('×').map((n) => Number(n.trim()));
       return w / h;
     };
     expect(Math.abs((await read()) - 2)).toBeLessThan(0.02);
 
-    await page.getByRole('button', { name: 'Swap landscape / portrait' }).click();
+    await page.getByTitle('Swap landscape / portrait').click();
     expect(Math.abs((await read()) - 0.5)).toBeLessThan(0.02);
     expect(errors).toEqual([]);
   });

@@ -425,6 +425,7 @@ export const ToolOptionsBar: React.FC = () => {
             <button
               type="button"
               title="Swap landscape / portrait"
+              aria-label="Swap landscape / portrait"
               onClick={swapCropOrientation}
               className="px-1.5 py-0.5 rounded hover:bg-[var(--lp-hover)] text-[11px] cursor-pointer text-[var(--lp-text-secondary)]"
             >
