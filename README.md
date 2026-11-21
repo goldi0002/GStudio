@@ -1,6 +1,8 @@
 # GStudio
 
-**Your images. Your device. Your control.**
+[![CI](https://github.com/goldi0002/GStudio/actions/workflows/ci.yml/badge.svg)](https://github.com/goldi0002/GStudio/actions/workflows/ci.yml)
+
+**Your images. Your device. Your control.** · Live at **[gstudio.toolbox4devs.com](https://gstudio.toolbox4devs.com)**
 
 GStudio is a privacy-first image editor that runs entirely in the browser. Nothing is uploaded: images are decoded, edited and exported on your device, and projects are saved locally in IndexedDB. It installs as a Progressive Web App and keeps working offline.
 
@@ -41,6 +43,12 @@ bun run dev        # http://localhost:3000
 | `bun run clean`      | Remove `dist/`                                       |
 
 The first time you run the end-to-end tests, install Playwright's browser with `bunx playwright install chromium`. The suite starts its own Vite server on port 4173.
+
+## CI and deployment
+
+- **CI** (`.github/workflows/ci.yml`) runs on every pull request and every push to `main`: typecheck, unit tests and production build in one job, the Playwright suite in another. If e2e tests fail, the Playwright report is uploaded as a build artifact.
+- **Deployment** is handled by Vercel's GitHub integration. Pushes to `main` deploy to production at [gstudio.toolbox4devs.com](https://gstudio.toolbox4devs.com), and each pull request gets a preview URL. `vercel.json` sets long-lived caching for hashed assets, keeps the service worker uncached so updates roll out promptly, and adds basic security headers.
+- **Dependabot** (`.github/dependabot.yml`) opens weekly update PRs for dependencies and GitHub Actions.
 
 ## Keyboard shortcuts
 
