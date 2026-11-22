@@ -103,6 +103,28 @@ test.describe('My Presets', () => {
     expect(errors).toEqual([]);
   });
 
+  test('keeps presets after a reload and still applies them', async ({ page }, testInfo) => {
+    const errors = collectPageErrors(page);
+    await openSample(page, 'Sunlit Courtyard Study');
+
+    await setRangeByLabel(page, 'Brightness', 35);
+    await savePresetViaUi(page, 'Persisted Look');
+    await expect(presetRows(page)).toHaveCount(1);
+
+    // A full reload drops in-memory state; the preset must come back from storage.
+    await page.reload();
+    await openSample(page, 'Sunlit Courtyard Study');
+
+    await expect(presetRows(page)).toHaveCount(1);
+    await expect(page.getByTitle('Apply preset Persisted Look', { exact: true })).toBeVisible();
+
+    await page.getByTitle('Apply preset Persisted Look', { exact: true }).click();
+    await expect.poll(() => adjustmentValue(page, 'Brightness')).toBe('35');
+
+    await evidence(page, testInfo, 'after-reload');
+    expect(errors).toEqual([]);
+  });
+
   test('stops at 30 presets and reports the full list', async ({ page }, testInfo) => {
     const errors = collectPageErrors(page);
 
