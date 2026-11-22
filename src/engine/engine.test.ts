@@ -14,6 +14,14 @@ import {
   isDefaultAdjustments,
   withTargetAdjustments,
 } from './adjustments';
+import {
+  deletePreset,
+  loadPresets,
+  MAX_ADJUSTMENT_PRESETS,
+  savePreset,
+  sanitizeAdjustments,
+  type PresetStorage,
+} from './presets';
 import { encodeBMP } from './bmpEncoder';
 import { cropRatioFor, fitRatioRect, parseRatio } from './cropRatio';
 import {
@@ -907,6 +915,151 @@ import type { AdjustmentLayer, GroupLayer, Layer, RasterLayer, ShapeLayer } from
   assert.notEqual(hashPixels(a), hashPixels(b), 'A one-channel change alters the hash');
   const view = new Uint8ClampedArray(new Uint8ClampedArray(16).buffer, 4, 8);
   assert.doesNotThrow(() => hashPixels(view), 'Offset views are supported');
+}
+
+// ---- Custom adjustment presets (#18) ----
+function makePresetStorage(): PresetStorage & { failWrites: boolean } {
+  const data = new Map<string, string>();
+  return {
+    failWrites: false,
+    getItem: (key) => data.get(key) ?? null,
+    setItem(key, value) {
+      if (this.failWrites) throw new Error('quota exceeded');
+      data.set(key, value);
+    },
+    removeItem: (key) => {
+      data.delete(key);
+    },
+  };
+}
+
+// Presets: save, reload and delete round trip
+{
+  const storage = makePresetStorage();
+  const warm = { ...cloneAdjustments(DEFAULT_ADJUSTMENTS), temperature: 40, contrast: 12 };
+  const saved = savePreset(storage, '  Warm Portrait  ', warm);
+  assert.ok(saved, 'Preset is saved');
+  assert.equal(saved?.name, 'Warm Portrait', 'Name is trimmed');
+
+  const loaded = loadPresets(storage);
+  assert.equal(loaded.length, 1);
+  assert.equal(loaded[0].name, 'Warm Portrait');
+  assert.equal(loaded[0].adjustments.temperature, 40, 'Adjustment values survive the round trip');
+  assert.equal(loaded[0].adjustments.contrast, 12);
+
+  const remaining = deletePreset(storage, loaded[0].id);
+  assert.equal(remaining.length, 0, 'Delete removes the preset');
+  assert.equal(loadPresets(storage).length, 0);
+}
+
+// Presets: empty names and unavailable storage are rejected without throwing
+{
+  const storage = makePresetStorage();
+  assert.equal(savePreset(storage, '   ', DEFAULT_ADJUSTMENTS), null, 'Blank name is rejected');
+  assert.equal(savePreset(null, 'Valid', DEFAULT_ADJUSTMENTS), null, 'Missing storage is rejected');
+  assert.deepEqual(loadPresets(null), [], 'No storage loads an empty list');
+  assert.deepEqual(deletePreset(undefined, 'nope'), [], 'Deleting without storage is safe');
+  storage.failWrites = true;
+  assert.equal(savePreset(storage, 'No Space', DEFAULT_ADJUSTMENTS), null, 'Write failures return null');
+}
+
+// Presets: re-using a name overwrites instead of duplicating
+{
+  const storage = makePresetStorage();
+  savePreset(storage, 'Look', { ...cloneAdjustments(DEFAULT_ADJUSTMENTS), saturation: 10 });
+  savePreset(storage, 'look', { ...cloneAdjustments(DEFAULT_ADJUSTMENTS), saturation: 90 });
+  const loaded = loadPresets(storage);
+  assert.equal(loaded.length, 1, 'Same name keeps one preset');
+  assert.equal(loaded[0].adjustments.saturation, 90, 'The newer values win');
+}
+
+// Presets: the list is capped at the maximum
+{
+  const storage = makePresetStorage();
+  for (let i = 0; i < MAX_ADJUSTMENT_PRESETS + 5; i += 1) {
+    savePreset(storage, `Preset ${i}`, { ...cloneAdjustments(DEFAULT_ADJUSTMENTS), brightness: i });
+  }
+  const loaded = loadPresets(storage);
+  assert.equal(loaded.length, MAX_ADJUSTMENT_PRESETS, 'Only the maximum number of presets is kept');
+  assert.equal(
+    loaded[loaded.length - 1].adjustments.brightness,
+    MAX_ADJUSTMENT_PRESETS - 1,
+    'Once full, additional presets are not added'
+  );
+  assert.equal(
+    savePreset(storage, 'One Too Many', DEFAULT_ADJUSTMENTS),
+    null,
+    'Saving at the limit is rejected'
+  );
+}
+
+// Presets: corrupt JSON is ignored
+{
+  const storage = makePresetStorage();
+  storage.setItem('gstudio.adjustmentPresets.v1', '{not json');
+  assert.deepEqual(loadPresets(storage), [], 'Corrupt JSON loads as an empty list');
+
+  storage.setItem(
+    'gstudio.adjustmentPresets.v1',
+    JSON.stringify([null, 42, { name: '' }, { name: 'Kept', adjustments: { brightness: 5 } }])
+  );
+  const loaded = loadPresets(storage);
+  assert.equal(loaded.length, 1, 'Invalid entries are dropped');
+  assert.equal(loaded[0].name, 'Kept');
+  assert.equal(loaded[0].adjustments.brightness, 5);
+}
+
+// Presets: sanitizing clamps values and drops unknown keys
+{
+  const sanitized = sanitizeAdjustments({
+    brightness: 999,
+    contrast: -999,
+    saturation: '25',
+    hue: Number.NaN,
+    grayscale: 'yes',
+    sepia: true,
+    evil: 'drop me',
+    levels: { black: -5, white: 1000, gamma: 9 },
+    curves: {
+      rgb: [
+        { x: 300, y: -20 },
+        { x: 128, y: 128 },
+        { x: 255, y: 255 },
+      ],
+    },
+    filters: { blur: 99, vignetteMidpoint: 2, pixelate: 0 },
+  });
+
+  assert.equal(sanitized.brightness, 100, 'Positive values are clamped');
+  assert.equal(sanitized.contrast, -100, 'Negative values are clamped');
+  assert.equal(sanitized.saturation, 25, 'Numeric strings are accepted');
+  assert.equal(sanitized.hue, 0, 'NaN falls back to the default');
+  assert.equal(sanitized.grayscale, false, 'Non-boolean flags fall back to the default');
+  assert.equal(sanitized.sepia, true);
+  assert.equal('evil' in sanitized, false, 'Unknown keys are dropped');
+  assert.equal(sanitized.levels?.black, 0);
+  assert.equal(sanitized.levels?.white, 255);
+  assert.equal(sanitized.levels?.gamma, 4);
+  assert.equal(sanitized.filters?.blur, 35);
+  assert.equal(sanitized.filters?.vignetteMidpoint, 15);
+  assert.equal(sanitized.filters?.pixelate, 1);
+  assert.equal(sanitized.curves?.rgb.length, 2, 'Duplicate x values are dropped');
+  assert.equal(sanitized.curves?.rgb[0].x, 128, 'Curve points are sorted by x');
+  assert.equal(sanitized.curves?.rgb[0].y, 128);
+  assert.equal(sanitized.curves?.rgb[1].x, 255, 'Out-of-range x is clamped');
+  assert.equal(sanitized.curves?.rgb[1].y, 0, 'Out-of-range y is clamped');
+}
+
+// Presets: saved data is a copy, not a live reference
+{
+  const storage = makePresetStorage();
+  const adjustments = cloneAdjustments(DEFAULT_ADJUSTMENTS);
+  savePreset(storage, 'Copy', adjustments);
+  adjustments.brightness = 77;
+  adjustments.levels!.gamma = 3;
+  const loaded = loadPresets(storage);
+  assert.equal(loaded[0].adjustments.brightness, 0, 'Stored preset is independent of the source object');
+  assert.equal(loaded[0].adjustments.levels?.gamma, 1);
 }
 
 console.log('All GStudio graphics engine unit tests passed.');
