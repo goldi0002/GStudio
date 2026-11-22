@@ -1,4 +1,5 @@
 import { deserializeProject, serializeDocument } from './fileAccess';
+import { markDocumentPersisted } from './revisionTracker';
 import type { DocumentState, RecentProjectMeta, SerializedProject } from '../types/editor';
 
 const DB_NAME = 'localpixel-studio-db';
@@ -37,6 +38,7 @@ export async function saveProjectToIndexedDb(doc: DocumentState): Promise<Recent
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
+    markDocumentPersisted(doc);
     const jsonSize = JSON.stringify(serialized).length;
     return {
       id: serialized.id,

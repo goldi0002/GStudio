@@ -14,6 +14,18 @@ import {
   isDefaultAdjustments,
   withTargetAdjustments,
 } from './adjustments';
+import {
+  documentRevision,
+  forgetPersistedRevision,
+  getPersistedRevision,
+  hasUnsavedDocuments,
+  isDocumentUnsaved,
+  markDocumentPersisted,
+  prunePersistedRevisions,
+  recordPersistedRevision,
+  resetPersistedRevisions,
+} from '../persistence/revisionTracker';
+import type { DocumentState } from '../types/editor';
 import { encodeBMP } from './bmpEncoder';
 import { cropRatioFor, fitRatioRect, parseRatio } from './cropRatio';
 import {
@@ -907,6 +919,99 @@ import type { AdjustmentLayer, GroupLayer, Layer, RasterLayer, ShapeLayer } from
   assert.notEqual(hashPixels(a), hashPixels(b), 'A one-channel change alters the hash');
   const view = new Uint8ClampedArray(new Uint8ClampedArray(16).buffer, 4, 8);
   assert.doesNotThrow(() => hashPixels(view), 'Offset views are supported');
+}
+
+function revisionDoc(id: string, updatedAt: number, dirty: boolean): DocumentState {
+  return {
+    id,
+    updatedAt,
+    dirty,
+    historyIndex: 0,
+    history: [],
+  } as unknown as DocumentState;
+}
+
+// Unsaved-changes tracking: only persisted revisions count as saved
+{
+  resetPersistedRevisions();
+
+  assert.equal(
+    isDocumentUnsaved(revisionDoc('doc-dirty', 100, true)),
+    true,
+    'A never-persisted dirty document is unsaved'
+  );
+  assert.equal(
+    isDocumentUnsaved(revisionDoc('doc-clean', 100, false)),
+    false,
+    'A never-persisted clean document is not warned about'
+  );
+
+  const saved = revisionDoc('doc-dirty', 100, true);
+  markDocumentPersisted(saved);
+  assert.equal(isDocumentUnsaved(saved), false, 'A successful save clears the guard');
+
+  assert.equal(
+    isDocumentUnsaved(revisionDoc('doc-dirty', 101, false)),
+    true,
+    'A newer revision stays unsaved even after the store clears its dirty flag'
+  );
+
+  resetPersistedRevisions();
+}
+
+// Unsaved-changes tracking: a stale save settling last keeps newer edits unsaved
+{
+  resetPersistedRevisions();
+  const older = revisionDoc('doc-race', 100, false);
+  const newer = revisionDoc('doc-race', 200, false);
+
+  recordPersistedRevision('doc-race', documentRevision(newer));
+  assert.equal(isDocumentUnsaved(newer), false, 'The newest completed save marks its revision saved');
+
+  recordPersistedRevision('doc-race', documentRevision(older));
+  assert.equal(
+    isDocumentUnsaved(newer),
+    true,
+    'A stale autosave finishing after a newer save leaves the newer revision unsaved'
+  );
+
+  resetPersistedRevisions();
+}
+
+// Unsaved-changes tracking: documents are independent and forgotten on close
+{
+  resetPersistedRevisions();
+  markDocumentPersisted(revisionDoc('doc-a', 10, true));
+  markDocumentPersisted(revisionDoc('doc-b', 20, true));
+
+  assert.equal(
+    hasUnsavedDocuments([revisionDoc('doc-a', 10, true), revisionDoc('doc-b', 20, true)]),
+    false,
+    'All persisted documents are clean'
+  );
+  assert.equal(
+    hasUnsavedDocuments([revisionDoc('doc-a', 11, true), revisionDoc('doc-b', 20, true)]),
+    true,
+    'One modified document is enough to warn'
+  );
+
+  prunePersistedRevisions(new Set(['doc-b']));
+  assert.equal(getPersistedRevision('doc-a'), undefined, 'A closed document forgets its saved revision');
+  assert.equal(getPersistedRevision('doc-b'), '20:0:0', 'Open documents keep their saved revision');
+  assert.equal(
+    isDocumentUnsaved(revisionDoc('doc-b', 20, true)),
+    false,
+    'An open, persisted document stays clean'
+  );
+
+  forgetPersistedRevision('doc-b');
+  assert.equal(
+    isDocumentUnsaved(revisionDoc('doc-b', 20, false)),
+    false,
+    'A reopened, clean document starts without a warning'
+  );
+
+  resetPersistedRevisions();
 }
 
 console.log('All GStudio graphics engine unit tests passed.');
