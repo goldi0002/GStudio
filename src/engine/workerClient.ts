@@ -21,15 +21,29 @@ function getWorker(): Worker | null {
         type: 'module',
       });
       workerInstance.onmessage = (event: MessageEvent<WorkerAdjustResponse>) => {
-        const { requestId, width, height, buffer } = event.data;
+        const { requestId, width, height, buffer, error } = event.data;
         const entry = pendingRequests.get(requestId);
         if (!entry) return;
         pendingRequests.delete(requestId);
+        if (error || !buffer) {
+          entry.reject(new Error(error || 'Missing worker response buffer'));
+          return;
+        }
+        const expectedBytes = width * height * 4;
+        if (width <= 0 || height <= 0 || buffer.byteLength !== expectedBytes) {
+          entry.reject(new Error('Invalid worker buffer dimensions'));
+          return;
+        }
         const clamped = new Uint8ClampedArray(buffer);
         entry.resolve(new ImageData(clamped, width, height));
       };
+      workerInstance.onmessageerror = () => {
+        for (const [, entry] of pendingRequests) {
+          entry.reject(new Error('Worker message deserialization failed'));
+        }
+        pendingRequests.clear();
+      };
       workerInstance.onerror = () => {
-        workerUnavailable = true;
         workerInstance?.terminate();
         workerInstance = null;
         for (const [, entry] of pendingRequests) {

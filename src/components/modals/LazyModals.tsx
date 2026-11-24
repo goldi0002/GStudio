@@ -37,6 +37,9 @@ const ColorRangeModal = lazy(() =>
 const CommandPaletteModal = lazy(() =>
   import('./CommandPaletteModal').then((m) => ({ default: m.CommandPaletteModal }))
 );
+const ExifMetadataModal = lazy(() =>
+  import('./ExifMetadataModal').then((m) => ({ default: m.ExifMetadataModal }))
+);
 
 const MODALS: Array<{ isOpen: (m: ModalState) => boolean; Component: React.ComponentType }> = [
   { isOpen: (m) => m.newProject, Component: NewProjectModal },
@@ -50,6 +53,7 @@ const MODALS: Array<{ isOpen: (m: ModalState) => boolean; Component: React.Compo
   { isOpen: (m) => m.colorRange, Component: ColorRangeModal },
   { isOpen: (m) => m.commandPalette, Component: CommandPaletteModal },
   { isOpen: (m) => m.shortcuts || m.privacy, Component: ShortcutsPrivacyModal },
+  { isOpen: (m) => m.exifMetadata, Component: ExifMetadataModal },
   { isOpen: (m) => m.editingTextLayerId != null, Component: TextEditModal },
 ];
 

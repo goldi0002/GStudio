@@ -56,6 +56,11 @@ import {
   DEFAULT_OUTER_GLOW,
   DEFAULT_STROKE,
 } from '../engine/canvasOps';
+import {
+  formatCameraDisplayName,
+  formatLensDisplayName,
+  hasAnyExifFields,
+} from '../persistence/exifParser';
 import { useEditorStore } from '../store/useEditorStore';
 import type { BlendMode, HslBandId, Layer, ShapeKind } from '../types/editor';
 import { CurvesLevelsPanel } from './CurvesLevelsPanel';
@@ -193,6 +198,7 @@ export const RightInspector: React.FC = () => {
     setEditingTextLayerId,
     viewportSettings,
     setBeforeAfterMode,
+    openModal,
   } = useEditorStore();
 
   const [renamingLayerId, setRenamingLayerId] = useState<string | null>(null);
@@ -2850,13 +2856,22 @@ export const RightInspector: React.FC = () => {
         </div>
       </InspectorSection>
 
-      {/* 6. METADATA PANEL */}
+      {/* 6. METADATA & EXIF PANEL */}
       <InspectorSection
-        title="Metadata"
+        title="Metadata & EXIF"
         open={inspectorOpen.metadata}
         onToggle={() => toggleInspectorPanel('metadata')}
+        rightAction={
+          <button
+            type="button"
+            onClick={() => openModal('exifMetadata')}
+            className="text-[10px] font-medium text-[#0A84FF] hover:underline cursor-pointer whitespace-nowrap shrink-0"
+          >
+            Full EXIF…
+          </button>
+        }
       >
-        <dl className="grid grid-cols-2 gap-y-1.5 text-[11px]">
+        <dl className="grid grid-cols-2 gap-y-1.5 gap-x-2 text-[11px]">
           <dt className="text-[var(--lp-text-secondary)]">Dimensions</dt>
           <dd className="text-right font-mono-tabular">
             {doc.width} × {doc.height} px
@@ -2874,6 +2889,72 @@ export const RightInspector: React.FC = () => {
             {(estimatedBytes / (1024 * 1024)).toFixed(1)} MB
           </dd>
         </dl>
+
+        <div className="pt-2 border-t space-y-2" style={{ borderColor: 'var(--lp-border)' }}>
+          {hasAnyExifFields(doc.exif) ? (
+            <dl className="grid grid-cols-[auto_1fr] gap-y-1.5 gap-x-3 text-[11px]">
+              {formatCameraDisplayName(doc.exif) && (
+                <>
+                  <dt className="text-[var(--lp-text-secondary)]">Camera</dt>
+                  <dd className="text-right truncate" title={formatCameraDisplayName(doc.exif) ?? undefined}>
+                    {formatCameraDisplayName(doc.exif)}
+                  </dd>
+                </>
+              )}
+              {formatLensDisplayName(doc.exif) && (
+                <>
+                  <dt className="text-[var(--lp-text-secondary)]">Lens</dt>
+                  <dd className="text-right truncate" title={formatLensDisplayName(doc.exif) ?? undefined}>
+                    {formatLensDisplayName(doc.exif)}
+                  </dd>
+                </>
+              )}
+              {doc.exif?.dateTimeOriginal && (
+                <>
+                  <dt className="text-[var(--lp-text-secondary)]">Date Taken</dt>
+                  <dd className="text-right font-mono-tabular truncate">
+                    {doc.exif.dateTimeOriginal}
+                  </dd>
+                </>
+              )}
+              {(doc.exif?.focalLength || doc.exif?.focalLength35mm) && (
+                <>
+                  <dt className="text-[var(--lp-text-secondary)]">Focal Length</dt>
+                  <dd className="text-right font-mono-tabular">
+                    {doc.exif.focalLength ?? doc.exif.focalLength35mm}
+                  </dd>
+                </>
+              )}
+              {(doc.exif?.aperture || doc.exif?.shutterSpeed || doc.exif?.iso !== undefined) && (
+                <>
+                  <dt className="text-[var(--lp-text-secondary)]">Exposure</dt>
+                  <dd className="text-right font-mono-tabular truncate">
+                    {[
+                      doc.exif?.aperture,
+                      doc.exif?.shutterSpeed,
+                      doc.exif?.iso !== undefined ? `ISO ${doc.exif.iso}` : undefined,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </dd>
+                </>
+              )}
+            </dl>
+          ) : (
+            <p className="text-[11px] text-[var(--lp-text-secondary)]">
+              No embedded EXIF tags in this image.
+            </p>
+          )}
+
+          <button
+            type="button"
+            onClick={() => openModal('exifMetadata')}
+            className="w-full py-1.5 px-2.5 rounded-md border text-[11px] font-medium hover:bg-[var(--lp-hover)] transition-colors cursor-pointer text-center"
+            style={{ borderColor: 'var(--lp-border)' }}
+          >
+            Inspect Full EXIF Metadata…
+          </button>
+        </div>
       </InspectorSection>
     </aside>
   );

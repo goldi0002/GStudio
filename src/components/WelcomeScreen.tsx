@@ -16,11 +16,12 @@ import { getSampleThumbnail, SAMPLE_PRESETS } from '../engine/sampleImages';
 import {
   decodeImageFile,
   detectLocalCapabilities,
+  isSafeRasterDataUrl,
+  parseSerializedProject,
   pickLocalFiles,
 } from '../persistence/fileAccess';
 import { estimateStorageUsage } from '../persistence/indexedDb';
 import { useEditorStore } from '../store/useEditorStore';
-import type { SerializedProject } from '../types/editor';
 
 const QUICK_FORMATS = [
   { label: 'Instagram Square', w: 1080, h: 1080, bg: '#FFFFFF' },
@@ -79,10 +80,7 @@ export const WelcomeScreen: React.FC = () => {
     if (files.length === 0) return;
     try {
       const text = await files[0].text();
-      const parsed = JSON.parse(text) as SerializedProject;
-      if (parsed.formatVersion !== 1 || !Array.isArray(parsed.layers)) {
-        throw new Error('Invalid .lps project file.');
-      }
+      const parsed = parseSerializedProject(JSON.parse(text));
       await openProjectData(parsed);
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Unable to open project.', 'error');
@@ -97,10 +95,13 @@ export const WelcomeScreen: React.FC = () => {
       if (file.name.toLowerCase().endsWith('.lps')) {
         try {
           const text = await file.text();
-          const parsed = JSON.parse(text) as SerializedProject;
+          const parsed = parseSerializedProject(JSON.parse(text));
           await openProjectData(parsed);
-        } catch {
-          showToast(`Failed to open project "${file.name}".`, 'error');
+        } catch (err) {
+          showToast(
+            err instanceof Error ? err.message : `Failed to open project "${file.name}".`,
+            'error'
+          );
         }
       } else {
         try {
@@ -434,12 +435,14 @@ export const WelcomeScreen: React.FC = () => {
                       }}
                     >
                       <div className="aspect-[16/10] checkerboard-bg relative overflow-hidden">
-                        <img
-                          src={proj.thumbnailDataUrl}
-                          alt={proj.name}
-                          referrerPolicy="no-referrer"
-                          className="w-full h-full object-contain transition-transform duration-200 group-hover:scale-[1.02]"
-                        />
+                        {isSafeRasterDataUrl(proj.thumbnailDataUrl) && (
+                          <img
+                            src={proj.thumbnailDataUrl}
+                            alt={proj.name}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-contain transition-transform duration-200 group-hover:scale-[1.02]"
+                          />
+                        )}
                         <button
                           type="button"
                           title="Delete from local storage"

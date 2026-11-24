@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Download, Loader2, X } from 'lucide-react';
-import { encodeDocumentForExport, saveBlobLocally } from '../../persistence/fileAccess';
+import {
+  constrainCanvasDimensions,
+  encodeDocumentForExport,
+  saveBlobLocally,
+} from '../../persistence/fileAccess';
 import { useEditorStore } from '../../store/useEditorStore';
 import type { ExportFitMode, ExportFormat } from '../../types/editor';
 
@@ -55,19 +59,24 @@ export const ExportModal: React.FC = () => {
         EXPORT_PRESETS.find((p) => p.category === presetCategory) ??
         null;
 
-  const targetW = doc
+  const rawTargetW = doc
     ? activePreset
       ? activePreset.width
       : Math.max(1, Math.round(doc.width * scale))
     : 1;
-  const targetH = doc
+  const rawTargetH = doc
     ? activePreset
       ? activePreset.height
       : Math.max(1, Math.round(doc.height * scale))
     : 1;
+  const { width: targetW, height: targetH } = constrainCanvasDimensions(rawTargetW, rawTargetH);
 
   useEffect(() => {
-    if (!modals.exportImage || !doc) return;
+    if (!modals.exportImage || !doc) {
+      setPreviewUrl(null);
+      setEstimatedBytes(null);
+      return;
+    }
     let cancelled = false;
     let createdObjectUrl: string | null = null;
     setEncoding(true);

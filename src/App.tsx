@@ -5,9 +5,9 @@ import { requestCloseDocument } from './hooks/useUnsavedChangesGuard';
 import { LazyModals } from './components/modals/LazyModals';
 import { TopToolbar } from './components/TopToolbar';
 import { WelcomeScreen } from './components/WelcomeScreen';
-import { decodeImageFile, pickLocalFiles } from './persistence/fileAccess';
+import { decodeImageFile, parseSerializedProject, pickLocalFiles } from './persistence/fileAccess';
 import { useEditorStore } from './store/useEditorStore';
-import type { SerializedProject, ToolId } from './types/editor';
+import type { ToolId } from './types/editor';
 
 // The editor UI is the largest part of the app; load it on demand so the
 // welcome screen renders from a smaller initial bundle.
@@ -454,10 +454,13 @@ function StudioShell() {
       if (file.name.toLowerCase().endsWith('.lps')) {
         try {
           const text = await file.text();
-          const parsed = JSON.parse(text) as SerializedProject;
+          const parsed = parseSerializedProject(JSON.parse(text));
           await openProjectData(parsed);
-        } catch {
-          showToast(`Failed to open project "${file.name}".`, 'error');
+        } catch (err) {
+          showToast(
+            err instanceof Error ? err.message : `Failed to open project "${file.name}".`,
+            'error'
+          );
         }
       } else {
         try {

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Lock, Unlock, X } from 'lucide-react';
+import { constrainCanvasDimensions, MAX_IMAGE_DIMENSION } from '../../persistence/fileAccess';
 import { useEditorStore } from '../../store/useEditorStore';
 
 export const ResizeImageModal: React.FC = () => {
@@ -23,18 +24,22 @@ export const ResizeImageModal: React.FC = () => {
   const aspect = doc.width / doc.height;
 
   const handleWidthChange = (nextW: number) => {
-    const clamped = Math.max(1, Math.min(8192, Math.round(nextW) || 1));
-    setWidth(clamped);
-    if (lockAspect) {
-      setHeight(Math.max(1, Math.round(clamped / aspect)));
+    const rawW = Math.max(1, Math.min(MAX_IMAGE_DIMENSION, Math.round(nextW) || 1));
+    const rawH = lockAspect ? Math.max(1, Math.round(rawW / aspect)) : height;
+    const clamped = constrainCanvasDimensions(rawW, rawH);
+    setWidth(clamped.width);
+    if (lockAspect || clamped.scaledDown) {
+      setHeight(clamped.height);
     }
   };
 
   const handleHeightChange = (nextH: number) => {
-    const clamped = Math.max(1, Math.min(8192, Math.round(nextH) || 1));
-    setHeight(clamped);
-    if (lockAspect) {
-      setWidth(Math.max(1, Math.round(clamped * aspect)));
+    const rawH = Math.max(1, Math.min(MAX_IMAGE_DIMENSION, Math.round(nextH) || 1));
+    const rawW = lockAspect ? Math.max(1, Math.round(rawH * aspect)) : width;
+    const clamped = constrainCanvasDimensions(rawW, rawH);
+    setHeight(clamped.height);
+    if (lockAspect || clamped.scaledDown) {
+      setWidth(clamped.width);
     }
   };
 
@@ -119,8 +124,12 @@ export const ResizeImageModal: React.FC = () => {
                 key={scale}
                 type="button"
                 onClick={() => {
-                  setWidth(Math.max(1, Math.round(doc.width * scale)));
-                  setHeight(Math.max(1, Math.round(doc.height * scale)));
+                  const clamped = constrainCanvasDimensions(
+                    Math.max(1, Math.round(doc.width * scale)),
+                    Math.max(1, Math.round(doc.height * scale))
+                  );
+                  setWidth(clamped.width);
+                  setHeight(clamped.height);
                 }}
                 className="flex-1 py-1 rounded border text-[11px] font-mono-tabular hover:bg-[var(--lp-hover)] cursor-pointer"
                 style={{ borderColor: 'var(--lp-border)' }}

@@ -62,6 +62,7 @@ import {
 } from '../engine/canvasOps';
 import { SAMPLE_PRESETS } from '../engine/sampleImages';
 import {
+  constrainCanvasDimensions,
   type DecodedImageResult,
   deserializeProject,
   saveBlobLocally,
@@ -75,6 +76,7 @@ import {
   saveProjectToIndexedDb,
   saveSetting,
 } from '../persistence/indexedDb';
+import { documentRevision } from '../persistence/revisionTracker';
 import type {
   Adjustments,
   CanvasAnchor,
@@ -186,6 +188,7 @@ export interface ModalStates {
   commandPalette: boolean;
   shortcuts: boolean;
   privacy: boolean;
+  exifMetadata: boolean;
   editingTextLayerId: string | null;
 }
 
@@ -240,7 +243,7 @@ interface EditorStoreState {
   }) => void;
   openDecodedImage: (decoded: DecodedImageResult) => void;
   openSamplePreset: (presetId: string) => void;
-  openProjectData: (project: SerializedProject) => Promise<void>;
+  openProjectData: (project: SerializedProject | unknown) => Promise<void>;
   openRecentProject: (projectId: string) => Promise<void>;
   deleteRecentProject: (projectId: string) => Promise<void>;
   closeDocument: (docId: string) => void;
@@ -389,37 +392,54 @@ interface EditorStoreState {
   clearToast: () => void;
 }
 
-let autosaveTimer: number | null = null;
+const autosaveTimers = new Map<string, number>();
+let nextToastId = 1;
+
+function clearScheduledAutosave(docId: string) {
+  const existing = autosaveTimers.get(docId);
+  if (existing !== undefined) {
+    window.clearTimeout(existing);
+    autosaveTimers.delete(docId);
+  }
+}
 
 function scheduleAutosave(
   docId: string,
   get: () => EditorStoreState,
-  set: (partial: Partial<EditorStoreState>) => void
+  set: (partial: Partial<EditorStoreState> | ((s: EditorStoreState) => Partial<EditorStoreState>)) => void
 ) {
-  if (autosaveTimer !== null) {
-    window.clearTimeout(autosaveTimer);
-  }
+  clearScheduledAutosave(docId);
   set({ saveStatus: 'saving' });
-  autosaveTimer = window.setTimeout(async () => {
+  const timerId = window.setTimeout(async () => {
+    autosaveTimers.delete(docId);
     const doc = get().documents.find((d) => d.id === docId);
-    if (!doc) return;
+    if (!doc) {
+      if (autosaveTimers.size === 0) set({ saveStatus: 'idle' });
+      return;
+    }
+    const savedRevision = documentRevision(doc);
     const meta = await saveProjectToIndexedDb(doc);
     if (meta) {
       const recents = await listRecentProjectsFromIndexedDb();
-      set({
+      set((s) => ({
         recentProjects: recents,
-        saveStatus: 'saved',
-        documents: get().documents.map((d) => (d.id === docId ? { ...d, dirty: false } : d)),
-      });
+        saveStatus: autosaveTimers.size > 0 ? 'saving' : 'saved',
+        documents: s.documents.map((d) =>
+          d.id === docId && documentRevision(d) === savedRevision ? { ...d, dirty: false } : d
+        ),
+      }));
     } else {
-      set({ saveStatus: 'idle' });
+      set({ saveStatus: autosaveTimers.size > 0 ? 'saving' : 'idle' });
     }
   }, 1100);
+  autosaveTimers.set(docId, timerId);
 }
 
 function withActiveDocMutation(
   get: () => EditorStoreState,
-  set: (partial: Partial<EditorStoreState>) => void,
+  set: (
+    partial: Partial<EditorStoreState> | ((s: EditorStoreState) => Partial<EditorStoreState>)
+  ) => void,
   mutator: (doc: DocumentState) => DocumentState | null,
   historyLabel?: string
 ) {
@@ -581,6 +601,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     commandPalette: false,
     shortcuts: false,
     privacy: false,
+    exifMetadata: false,
     editingTextLayerId: null,
   },
   filterGalleryKind: 'high-pass',
@@ -612,8 +633,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
   },
 
   createDocument: ({ name, width, height, backgroundColor }) => {
-    const w = Math.max(1, Math.min(8192, Math.round(width)));
-    const h = Math.max(1, Math.min(8192, Math.round(height)));
+    const { width: w, height: h } = constrainCanvasDimensions(width, height);
     const baseCanvas = createCanvas(w, h);
     if (backgroundColor !== 'transparent') {
       const ctx = baseCanvas.getContext('2d');
@@ -660,6 +680,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       createdAt: Date.now(),
       updatedAt: Date.now(),
       sourceFormat: 'LPS',
+      exif: null,
     };
     doc.history = [createHistoryEntry(doc, 'New Document')];
 
@@ -714,6 +735,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       updatedAt: Date.now(),
       sourceFormat: decoded.sourceFormat,
       fileSizeBytes: decoded.fileSizeBytes,
+      exif: decoded.exif ?? null,
     };
     doc.history = [createHistoryEntry(doc, `Open ${decoded.sourceFormat}`)];
 
@@ -777,6 +799,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       createdAt: Date.now(),
       updatedAt: Date.now(),
       sourceFormat: 'Sample',
+      exif: null,
     };
     doc.history = [createHistoryEntry(doc, 'Open Studio Sample')];
 
@@ -874,6 +897,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
   },
 
   closeDocument: (docId) => {
+    clearScheduledAutosave(docId);
     const docs = get().documents.filter((d) => d.id !== docId);
     let nextActive = get().activeDocumentId;
     if (nextActive === docId) {
@@ -2442,8 +2466,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
   setPreferInternalClipboard: (value) => set({ preferInternalClipboard: value }),
 
   resizeActiveDocument: (newWidth, newHeight) => {
-    const w = Math.max(1, Math.min(8192, Math.round(newWidth)));
-    const h = Math.max(1, Math.min(8192, Math.round(newHeight)));
+    const { width: w, height: h } = constrainCanvasDimensions(newWidth, newHeight);
     withActiveDocMutation(
       get,
       set,
@@ -2460,8 +2483,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
   },
 
   canvasSizeActiveDocument: (newWidth, newHeight, anchor, extensionColor = 'transparent') => {
-    const w = Math.max(1, Math.min(8192, Math.round(newWidth)));
-    const h = Math.max(1, Math.min(8192, Math.round(newHeight)));
+    const { width: w, height: h } = constrainCanvasDimensions(newWidth, newHeight);
     withActiveDocMutation(
       get,
       set,
@@ -3055,18 +3077,22 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
   saveActiveDocumentNow: async () => {
     const doc = get().documents.find((d) => d.id === get().activeDocumentId);
     if (!doc) return;
+    clearScheduledAutosave(doc.id);
+    const savedRevision = documentRevision(doc);
     set({ saveStatus: 'saving' });
     const meta = await saveProjectToIndexedDb(doc);
     if (meta) {
       const recents = await listRecentProjectsFromIndexedDb();
       set((s) => ({
         recentProjects: recents,
-        saveStatus: 'saved',
-        documents: s.documents.map((d) => (d.id === doc.id ? { ...d, dirty: false } : d)),
+        saveStatus: autosaveTimers.size > 0 ? 'saving' : 'saved',
+        documents: s.documents.map((d) =>
+          d.id === doc.id && documentRevision(d) === savedRevision ? { ...d, dirty: false } : d
+        ),
       }));
       get().showToast(`Saved "${doc.name}" to local IndexedDB storage.`, 'success');
     } else {
-      set({ saveStatus: 'idle' });
+      set({ saveStatus: autosaveTimers.size > 0 ? 'saving' : 'idle' });
       get().showToast('Unable to write to browser IndexedDB storage.', 'error');
     }
   },
@@ -3117,7 +3143,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     set((s) => ({ modals: { ...s.modals, editingTextLayerId: id } })),
 
   showToast: (message, kind = 'info') => {
-    const id = Date.now();
+    const id = nextToastId++;
     set({ toast: { id, message, kind } });
     window.setTimeout(() => {
       if (get().toast?.id === id) {

@@ -360,6 +360,7 @@ export const CanvasWorkspace: React.FC = () => {
 
     void processAdjustmentsAsync(imgData, doc.adjustments).then((processed) => {
       if (adjustVersionRef.current !== version) return;
+      if (processed.width !== doc.width || processed.height !== doc.height) return;
       const outCanvas = createCanvas(doc.width, doc.height);
       const outCtx = outCanvas.getContext('2d');
       if (outCtx) {
@@ -1676,6 +1677,7 @@ export const CanvasWorkspace: React.FC = () => {
     const imgData = ctx.getImageData(0, 0, doc.width, doc.height);
     void processAdjustmentsAsync(imgData, doc.adjustments).then((processed) => {
       if (adjustVersionRef.current !== version) return;
+      if (processed.width !== doc.width || processed.height !== doc.height) return;
       const outCanvas = createCanvas(doc.width, doc.height);
       const outCtx = outCanvas.getContext('2d');
       outCtx?.putImageData(processed, 0, 0);

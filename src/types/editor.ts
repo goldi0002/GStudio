@@ -347,6 +347,37 @@ export interface HistoryEntry {
   activeLayerId: string | null;
 }
 
+export interface ImageExifMetadata {
+  make?: string;
+  model?: string;
+  lensMake?: string;
+  lensModel?: string;
+  dateTimeOriginal?: string;
+  focalLength?: string;
+  focalLength35mm?: string;
+  aperture?: string;
+  shutterSpeed?: string;
+  iso?: number;
+  exposureBias?: string;
+  exposureProgram?: string;
+  meteringMode?: string;
+  whiteBalance?: string;
+  flash?: string;
+  orientation?: string;
+  colorSpace?: string;
+  xResolution?: string;
+  exifWidth?: number;
+  exifHeight?: number;
+  software?: string;
+  artist?: string;
+  copyright?: string;
+  gps?: {
+    latitude: number;
+    longitude: number;
+    altitude?: string;
+  };
+}
+
 export interface DocumentState {
   id: string;
   name: string;
@@ -369,6 +400,7 @@ export interface DocumentState {
   sourceFormat: string;
   fileSizeBytes?: number;
   fileHandleName?: string;
+  exif?: ImageExifMetadata | null;
 }
 
 export interface ToolOptions {
@@ -483,4 +515,5 @@ export interface SerializedProject {
   updatedAt: number;
   sourceFormat: string;
   thumbnailDataUrl: string;
+  exif?: ImageExifMetadata | null;
 }

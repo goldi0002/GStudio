@@ -11,6 +11,7 @@ import {
   Crosshair,
   X,
 } from 'lucide-react';
+import { constrainCanvasDimensions, MAX_IMAGE_DIMENSION } from '../../persistence/fileAccess';
 import { useEditorStore } from '../../store/useEditorStore';
 import type { CanvasAnchor } from '../../types/editor';
 
@@ -115,11 +116,13 @@ export const CanvasSizeModal: React.FC = () => {
               <input
                 type="number"
                 min={1}
-                max={8192}
+                max={MAX_IMAGE_DIMENSION}
                 value={width}
-                onChange={(e) =>
-                  setWidth(Math.max(1, Math.min(8192, Math.round(Number(e.target.value)) || 1)))
-                }
+                onChange={(e) => {
+                  const clamped = constrainCanvasDimensions(Number(e.target.value) || 1, height);
+                  setWidth(clamped.width);
+                  setHeight(clamped.height);
+                }}
                 className="w-full px-3 py-1.5 rounded-lg border bg-[var(--lp-bg)] font-mono-tabular outline-none focus:border-[#0A84FF]"
                 style={{ borderColor: 'var(--lp-border)' }}
               />
@@ -129,11 +132,13 @@ export const CanvasSizeModal: React.FC = () => {
               <input
                 type="number"
                 min={1}
-                max={8192}
+                max={MAX_IMAGE_DIMENSION}
                 value={height}
-                onChange={(e) =>
-                  setHeight(Math.max(1, Math.min(8192, Math.round(Number(e.target.value)) || 1)))
-                }
+                onChange={(e) => {
+                  const clamped = constrainCanvasDimensions(width, Number(e.target.value) || 1);
+                  setWidth(clamped.width);
+                  setHeight(clamped.height);
+                }}
                 className="w-full px-3 py-1.5 rounded-lg border bg-[var(--lp-bg)] font-mono-tabular outline-none focus:border-[#0A84FF]"
                 style={{ borderColor: 'var(--lp-border)' }}
               />
@@ -145,23 +150,26 @@ export const CanvasSizeModal: React.FC = () => {
               {
                 label: '+100 px',
                 apply: () => {
-                  setWidth(Math.min(8192, doc.width + 100));
-                  setHeight(Math.min(8192, doc.height + 100));
+                  const clamped = constrainCanvasDimensions(doc.width + 100, doc.height + 100);
+                  setWidth(clamped.width);
+                  setHeight(clamped.height);
                 },
               },
               {
                 label: '+200 px',
                 apply: () => {
-                  setWidth(Math.min(8192, doc.width + 200));
-                  setHeight(Math.min(8192, doc.height + 200));
+                  const clamped = constrainCanvasDimensions(doc.width + 200, doc.height + 200);
+                  setWidth(clamped.width);
+                  setHeight(clamped.height);
                 },
               },
               {
                 label: 'Square',
                 apply: () => {
                   const side = Math.max(doc.width, doc.height);
-                  setWidth(side);
-                  setHeight(side);
+                  const clamped = constrainCanvasDimensions(side, side);
+                  setWidth(clamped.width);
+                  setHeight(clamped.height);
                 },
               },
             ].map((preset) => (

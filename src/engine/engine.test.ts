@@ -47,6 +47,19 @@ import {
   recordPersistedRevision,
   resetPersistedRevisions,
 } from '../persistence/revisionTracker';
+import {
+  constrainCanvasDimensions,
+  isSafeRasterDataUrl,
+  MAX_IMAGE_DIMENSION,
+  MAX_IMAGE_PIXELS,
+  parseSerializedProject,
+  sanitizeLayerEffects,
+  sanitizeSvgMarkup,
+} from '../persistence/projectValidation';
+import {
+  formatCameraDisplayName,
+  parseExifFromBuffer,
+} from '../persistence/exifParser';
 import type { DocumentState } from '../types/editor';
 import { encodeBMP } from './bmpEncoder';
 import { cropRatioFor, fitRatioRect, parseRatio } from './cropRatio';
@@ -2179,6 +2192,278 @@ function revisionDoc(id: string, updatedAt: number, dirty: boolean): DocumentSta
   assert.ok(rubylith[12] > strip[12], 'Unselected dark pixel receives crimson rubylith tint');
 }
 
+// ---- Project schema validation, URL safety, SVG sanitization & dimension bounds ----
+{
+  const VALID_PNG_DATA_URL =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  assert.equal(isSafeRasterDataUrl(VALID_PNG_DATA_URL), true, 'Valid base64 PNG data URL allowed');
+  assert.equal(isSafeRasterDataUrl('https://evil.example/tracker.png'), false, 'Remote HTTPS URL rejected');
+  assert.equal(isSafeRasterDataUrl('http://evil.example/tracker.png'), false, 'Remote HTTP URL rejected');
+  assert.equal(isSafeRasterDataUrl('javascript:alert(1)'), false, 'javascript: URI rejected');
+  assert.equal(
+    isSafeRasterDataUrl('data:image/svg+xml;base64,PHN2Zz48L3N2Zz4='),
+    false,
+    'SVG data URL rejected as raster pixel source'
+  );
+  assert.equal(isSafeRasterDataUrl('blob:https://app.example/123'), false, 'Blob URI rejected');
+
+  // Dimension ceiling & pixel budget enforcement
+  const hugeSquare = constrainCanvasDimensions(20000, 20000);
+  assert.ok(hugeSquare.width <= MAX_IMAGE_DIMENSION && hugeSquare.height <= MAX_IMAGE_DIMENSION);
+  assert.ok(hugeSquare.width * hugeSquare.height <= MAX_IMAGE_PIXELS);
+  assert.equal(hugeSquare.scaledDown, true);
+
+  const max8kSquare = constrainCanvasDimensions(8192, 8192);
+  assert.ok(max8kSquare.width * max8kSquare.height <= MAX_IMAGE_PIXELS, '8192x8192 constrained by 40M pixel ceiling');
+
+  // Malicious .lps with remote beacon rasterDataUrl fails validation
+  assert.throws(() => {
+    parseSerializedProject({
+      formatVersion: 1,
+      id: 'doc_1',
+      name: 'Malicious',
+      width: 100,
+      height: 100,
+      layers: [
+        {
+          id: 'layer_1',
+          type: 'raster',
+          rasterDataUrl: 'https://attacker.example/beacon.png',
+        },
+      ],
+    });
+  }, /unsafe/i);
+
+  // Malicious .lps with remote maskDataUrl fails validation
+  assert.throws(() => {
+    parseSerializedProject({
+      formatVersion: 1,
+      id: 'doc_1',
+      name: 'Malicious Mask',
+      width: 100,
+      height: 100,
+      layers: [
+        {
+          id: 'layer_1',
+          type: 'raster',
+          rasterDataUrl: VALID_PNG_DATA_URL,
+          maskDataUrl: 'data:image/svg+xml;base64,PHN2Zy8+',
+        },
+      ],
+    });
+  }, /unsafe/i);
+
+  // Valid project payload with polluted/oversized/extra properties is sanitized cleanly
+  const sanitizedProject = parseSerializedProject({
+    formatVersion: 1,
+    id: '__proto__',
+    name: '  Untrusted Imports  ',
+    width: 50000,
+    height: 50000,
+    backgroundColor: 'url(https://attacker.example/x)',
+    thumbnailDataUrl: 'https://attacker.example/thumb.png',
+    adjustments: { brightness: 9999, filters: { blur: 500 } },
+    layers: [
+      {
+        id: 'constructor',
+        name: 'Text',
+        type: 'text',
+        opacity: 999,
+        blendMode: 'not-a-mode',
+        parentId: 'nonexistent-group',
+        textData: {
+          text: 'Hello',
+          fontFamily: 'Arial; background: url(https://evil.example/f)',
+          fontSize: 99999,
+          fontWeight: '999',
+          color: 'red',
+          injectedKey: 'should-drop',
+        },
+      },
+      {
+        id: 'layer_dup',
+        type: 'adjustment',
+        adjustmentData: { exposure: -99 },
+      },
+    ],
+  });
+
+  assert.notEqual(sanitizedProject.id, '__proto__', 'Prototype-polluting doc ID replaced');
+  assert.equal(sanitizedProject.backgroundColor, 'transparent', 'Unsafe background CSS stripped');
+  assert.equal(sanitizedProject.thumbnailDataUrl, '', 'Unsafe thumbnail URL stripped');
+  assert.ok(sanitizedProject.width * sanitizedProject.height <= MAX_IMAGE_PIXELS);
+  assert.equal(sanitizedProject.adjustments.brightness, 100);
+  assert.equal(sanitizedProject.adjustments.filters?.blur, 35);
+  assert.notEqual(sanitizedProject.layers[0].id, 'constructor');
+  assert.equal(sanitizedProject.layers[0].opacity, 100);
+  assert.equal(sanitizedProject.layers[0].blendMode, 'normal');
+  assert.equal(sanitizedProject.layers[0].parentId, null);
+  assert.equal(sanitizedProject.layers[0].textData?.fontSize, 400);
+  assert.equal(sanitizedProject.layers[0].textData?.fontWeight, '600');
+  assert.equal('injectedKey' in (sanitizedProject.layers[0].textData as Record<string, unknown>), false);
+  assert.equal(sanitizedProject.layers[1].adjustmentData?.exposure, -2);
+
+  // Layer effects sanitization clamps blur/opacity/colors
+  const safeFx = sanitizeLayerEffects({
+    dropShadow: { enabled: true, blur: 9999, color: 'javascript:bad', opacity: -50 },
+  });
+  assert.equal(safeFx?.dropShadow.blur, 64);
+  assert.equal(safeFx?.dropShadow.opacity, 0);
+  assert.equal(safeFx?.dropShadow.color, '#000000');
+
+  // SVG sanitization removes executable tags, inline event handlers, and external URLs
+  const cleanSvg = sanitizeSvgMarkup(
+    `<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)">
+      <script>fetch("https://evil.example")</script>
+      <foreignObject><div>bad</div></foreignObject>
+      <image href="https://evil.example/leak.png" onclick="alert(2)" />
+      <rect width="10" height="10" style="fill: url(https://evil.example/fill.png)" />
+    </svg>`
+  );
+  assert.equal(/<script/i.test(cleanSvg), false, 'SVG <script> stripped');
+  assert.equal(/foreignObject/i.test(cleanSvg), false, 'SVG <foreignObject> stripped');
+  assert.equal(/onload=/i.test(cleanSvg), false, 'SVG onload handler stripped');
+  assert.equal(/onclick=/i.test(cleanSvg), false, 'SVG onclick handler stripped');
+  assert.equal(/evil\.example/i.test(cleanSvg), false, 'SVG external URLs stripped');
+  assert.equal(/<rect/i.test(cleanSvg), true, 'Valid SVG geometry retained');
+}
+
+// ---- EXIF metadata parser (JPEG APP1 + resilience + .lps preservation) ----
+{
+  const buildTestJpegWithExif = (): Uint8Array => {
+    const tiff = new Uint8Array(512);
+    const view = new DataView(tiff.buffer);
+    let dataCursor = 240;
+
+    const writeAscii = (str: string): { offset: number; len: number } => {
+      const offset = dataCursor;
+      for (let i = 0; i < str.length; i++) {
+        tiff[dataCursor++] = str.charCodeAt(i);
+      }
+      tiff[dataCursor++] = 0;
+      return { offset, len: str.length + 1 };
+    };
+
+    const writeRational = (num: number, den: number): number => {
+      const offset = dataCursor;
+      view.setUint32(dataCursor, num, true);
+      view.setUint32(dataCursor + 4, den, true);
+      dataCursor += 8;
+      return offset;
+    };
+
+    // TIFF header (Little Endian "II", 42, IFD0 @ 8)
+    tiff[0] = 0x49;
+    tiff[1] = 0x49;
+    view.setUint16(2, 42, true);
+    view.setUint32(4, 8, true);
+
+    const makeVal = writeAscii('FUJIFILM');
+    const modelVal = writeAscii('X-T5');
+    const dateVal = writeAscii('2025:04:12 17:45:09');
+    const lensVal = writeAscii('XF23mmF1.4 R LM WR');
+    const focalOffset = writeRational(23, 1);
+    const fNumberOffset = writeRational(14, 10);
+    const shutterOffset = writeRational(1, 500);
+
+    // IFD0 @ offset 8: 4 entries (Make, Model, Orientation, ExifIFDPointer)
+    const ifd0Start = 8;
+    const exifIfdStart = 100;
+    view.setUint16(ifd0Start, 4, true);
+
+    const writeEntry = (
+      base: number,
+      idx: number,
+      tag: number,
+      type: number,
+      count: number,
+      valOrOff: number
+    ) => {
+      const p = base + 2 + idx * 12;
+      view.setUint16(p, tag, true);
+      view.setUint16(p + 2, type, true);
+      view.setUint32(p + 4, count, true);
+      view.setUint32(p + 8, valOrOff, true);
+    };
+
+    writeEntry(ifd0Start, 0, 0x010f, 2, makeVal.len, makeVal.offset);
+    writeEntry(ifd0Start, 1, 0x0110, 2, modelVal.len, modelVal.offset);
+    writeEntry(ifd0Start, 2, 0x0112, 3, 1, 6);
+    writeEntry(ifd0Start, 3, 0x8769, 4, 1, exifIfdStart);
+    view.setUint32(ifd0Start + 2 + 4 * 12, 0, true);
+
+    // ExifIFD @ offset 100: 6 entries
+    view.setUint16(exifIfdStart, 6, true);
+    writeEntry(exifIfdStart, 0, 0x829a, 5, 1, shutterOffset);
+    writeEntry(exifIfdStart, 1, 0x829d, 5, 1, fNumberOffset);
+    writeEntry(exifIfdStart, 2, 0x8827, 3, 1, 400);
+    writeEntry(exifIfdStart, 3, 0x9003, 2, dateVal.len, dateVal.offset);
+    writeEntry(exifIfdStart, 4, 0x920a, 5, 1, focalOffset);
+    writeEntry(exifIfdStart, 5, 0xa434, 2, lensVal.len, lensVal.offset);
+    view.setUint32(exifIfdStart + 2 + 6 * 12, 0, true);
+
+    // Wrap in JPEG SOI + APP1 ("Exif\0\0" + tiff) + EOI
+    const app1PayloadLen = 2 + 6 + dataCursor;
+    const jpeg = new Uint8Array(2 + 2 + app1PayloadLen + 2);
+    const jView = new DataView(jpeg.buffer);
+    jpeg[0] = 0xff;
+    jpeg[1] = 0xd8;
+    jpeg[2] = 0xff;
+    jpeg[3] = 0xe1;
+    jView.setUint16(4, app1PayloadLen, false);
+    jpeg[6] = 0x45;
+    jpeg[7] = 0x78;
+    jpeg[8] = 0x69;
+    jpeg[9] = 0x66;
+    jpeg[10] = 0x00;
+    jpeg[11] = 0x00;
+    jpeg.set(tiff.subarray(0, dataCursor), 12);
+    jpeg[jpeg.length - 2] = 0xff;
+    jpeg[jpeg.length - 1] = 0xd9;
+    return jpeg;
+  };
+
+  const parsedExif = parseExifFromBuffer(buildTestJpegWithExif());
+  assert.ok(parsedExif, 'EXIF block parsed from synthetic JPEG');
+  assert.equal(formatCameraDisplayName(parsedExif), 'FUJIFILM X-T5');
+  assert.equal(parsedExif.lensModel, 'XF23mmF1.4 R LM WR');
+  assert.equal(parsedExif.dateTimeOriginal, '2025-04-12 17:45:09');
+  assert.equal(parsedExif.focalLength, '23 mm');
+  assert.equal(parsedExif.aperture, 'f/1.4');
+  assert.equal(parsedExif.shutterSpeed, '1/500 s');
+  assert.equal(parsedExif.iso, 400);
+  assert.equal(parsedExif.orientation, '6 · Rotate 90° CW');
+
+  // Truncated / malformed EXIF header safely returns null without throwing
+  assert.equal(parseExifFromBuffer(new Uint8Array([0xff, 0xd8, 0xff, 0xe1, 0x00, 0x10])), null);
+  assert.equal(parseExifFromBuffer(new Uint8Array([0x01, 0x02, 0x03])), null);
+
+  // Project serializer/validator preserves clean EXIF and drops invalid fields
+  const withExif = parseSerializedProject({
+    formatVersion: 1,
+    id: 'doc_exif',
+    name: 'Photo',
+    width: 800,
+    height: 600,
+    layers: [{ id: 'l1', type: 'raster' }],
+    exif: {
+      model: 'Sony\u0000A7IV',
+      dateTimeOriginal: '2025-05-01 09:30:00',
+      focalLength: '50 mm',
+      iso: 200,
+      gps: { latitude: 35.6762, longitude: 139.6503 },
+      extraUnknown: 'ignored',
+    },
+  });
+  assert.equal(withExif.exif?.model, 'SonyA7IV');
+  assert.equal(withExif.exif?.focalLength, '50 mm');
+  assert.equal(withExif.exif?.iso, 200);
+  assert.equal(withExif.exif?.gps?.latitude, 35.6762);
+  assert.equal('extraUnknown' in (withExif.exif as Record<string, unknown>), false);
+}
+
 console.log('All GStudio graphics engine unit tests passed.');
+
 
 

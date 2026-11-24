@@ -245,6 +245,14 @@ export const CommandPaletteModal: React.FC = () => {
         run: trimTransparentPixels,
       },
       {
+        id: 'image-exif-metadata',
+        category: 'Image',
+        label: 'View Image & EXIF Metadata…',
+        keywords: 'exif camera model lens focal length date taken iso aperture shutter gps info',
+        disabled: !doc,
+        run: () => openModal('exifMetadata'),
+      },
+      {
         id: 'image-rotate-cw',
         category: 'Image',
         label: 'Rotate Document 90° Clockwise',

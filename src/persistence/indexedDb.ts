@@ -1,4 +1,4 @@
-import { deserializeProject, serializeDocument } from './fileAccess';
+import { deserializeProject, isSafeRasterDataUrl, serializeDocument } from './fileAccess';
 import { markDocumentPersisted } from './revisionTracker';
 import type { DocumentState, RecentProjectMeta, SerializedProject } from '../types/editor';
 
@@ -7,9 +7,14 @@ const DB_VERSION = 1;
 const STORE_PROJECTS = 'projects';
 const STORE_SETTINGS = 'settings';
 
+let dbPromise: Promise<IDBDatabase> | null = null;
+
 function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (dbPromise) return dbPromise;
+
+  dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
+      dbPromise = null;
       reject(new Error('IndexedDB unavailable'));
       return;
     }
@@ -23,9 +28,24 @@ function openDb(): Promise<IDBDatabase> {
         db.createObjectStore(STORE_SETTINGS, { keyPath: 'key' });
       }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error('Failed to open IndexedDB'));
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      db.onclose = () => {
+        dbPromise = null;
+      };
+      resolve(db);
+    };
+    req.onerror = () => {
+      dbPromise = null;
+      reject(req.error ?? new Error('Failed to open IndexedDB'));
+    };
   });
+
+  return dbPromise;
 }
 
 export async function saveProjectToIndexedDb(doc: DocumentState): Promise<RecentProjectMeta | null> {
@@ -47,7 +67,9 @@ export async function saveProjectToIndexedDb(doc: DocumentState): Promise<Recent
       height: serialized.height,
       layerCount: serialized.layers.length,
       updatedAt: serialized.updatedAt,
-      thumbnailDataUrl: serialized.thumbnailDataUrl,
+      thumbnailDataUrl: isSafeRasterDataUrl(serialized.thumbnailDataUrl)
+        ? serialized.thumbnailDataUrl
+        : '',
       sourceFormat: serialized.sourceFormat,
       estimatedBytes: jsonSize,
     };
@@ -59,41 +81,59 @@ export async function saveProjectToIndexedDb(doc: DocumentState): Promise<Recent
 export async function listRecentProjectsFromIndexedDb(): Promise<RecentProjectMeta[]> {
   try {
     const db = await openDb();
-    const all = await new Promise<SerializedProject[]>((resolve, reject) => {
+    const all = await new Promise<unknown[]>((resolve, reject) => {
       const tx = db.transaction(STORE_PROJECTS, 'readonly');
       const req = tx.objectStore(STORE_PROJECTS).getAll();
-      req.onsuccess = () => resolve((req.result as SerializedProject[]) || []);
+      req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
       req.onerror = () => reject(req.error);
     });
 
-    return all
-      .map((p) => ({
+    const results: RecentProjectMeta[] = [];
+    for (const item of all) {
+      if (!item || typeof item !== 'object') continue;
+      const p = item as Partial<SerializedProject>;
+      if (typeof p.id !== 'string' || !p.id.trim() || !Array.isArray(p.layers)) continue;
+
+      let estimatedBytes = 0;
+      try {
+        estimatedBytes = JSON.stringify(p).length;
+      } catch {
+        continue;
+      }
+
+      results.push({
         id: p.id,
-        name: p.name,
-        width: p.width,
-        height: p.height,
+        name: typeof p.name === 'string' && p.name.trim() ? p.name : 'Untitled Project',
+        width: typeof p.width === 'number' && Number.isFinite(p.width) && p.width > 0 ? Math.round(p.width) : 1024,
+        height: typeof p.height === 'number' && Number.isFinite(p.height) && p.height > 0 ? Math.round(p.height) : 1024,
         layerCount: p.layers.length,
-        updatedAt: p.updatedAt,
-        thumbnailDataUrl: p.thumbnailDataUrl,
-        sourceFormat: p.sourceFormat || 'LPS',
-        estimatedBytes: JSON.stringify(p).length,
-      }))
-      .sort((a, b) => b.updatedAt - a.updatedAt);
+        updatedAt: typeof p.updatedAt === 'number' && Number.isFinite(p.updatedAt) ? p.updatedAt : 0,
+        thumbnailDataUrl: isSafeRasterDataUrl(p.thumbnailDataUrl) ? p.thumbnailDataUrl : '',
+        sourceFormat: typeof p.sourceFormat === 'string' && p.sourceFormat.trim() ? p.sourceFormat : 'LPS',
+        estimatedBytes,
+      });
+    }
+
+    return results.sort((a, b) => b.updatedAt - a.updatedAt);
   } catch {
     return [];
   }
 }
 
 export async function loadProjectFromIndexedDb(id: string) {
-  const db = await openDb();
-  const raw = await new Promise<SerializedProject | undefined>((resolve, reject) => {
-    const tx = db.transaction(STORE_PROJECTS, 'readonly');
-    const req = tx.objectStore(STORE_PROJECTS).get(id);
-    req.onsuccess = () => resolve(req.result as SerializedProject | undefined);
-    req.onerror = () => reject(req.error);
-  });
-  if (!raw) return null;
-  return deserializeProject(raw);
+  try {
+    const db = await openDb();
+    const raw = await new Promise<unknown>((resolve, reject) => {
+      const tx = db.transaction(STORE_PROJECTS, 'readonly');
+      const req = tx.objectStore(STORE_PROJECTS).get(id);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    if (!raw) return null;
+    return await deserializeProject(raw);
+  } catch {
+    return null;
+  }
 }
 
 export async function deleteProjectFromIndexedDb(id: string): Promise<void> {

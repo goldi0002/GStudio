@@ -13,9 +13,8 @@ import {
 import { BrandMark } from './BrandMark';
 import { PWAInstallButton } from './PWAInstallButton';
 import { requestCloseDocument } from '../hooks/useUnsavedChangesGuard';
-import { decodeImageFile, pickLocalFiles } from '../persistence/fileAccess';
+import { decodeImageFile, parseSerializedProject, pickLocalFiles } from '../persistence/fileAccess';
 import { useEditorStore } from '../store/useEditorStore';
-import type { SerializedProject } from '../types/editor';
 
 type MenuKey = 'file' | 'edit' | 'image' | 'layer' | 'filter' | 'view' | 'help' | null;
 
@@ -150,10 +149,7 @@ export const TopToolbar: React.FC = () => {
     if (files.length === 0) return;
     try {
       const text = await files[0].text();
-      const parsed = JSON.parse(text) as SerializedProject;
-      if (parsed.formatVersion !== 1 || !Array.isArray(parsed.layers)) {
-        throw new Error('Invalid .lps project file.');
-      }
+      const parsed = parseSerializedProject(JSON.parse(text));
       await openProjectData(parsed);
       showToast(`Opened project "${parsed.name}"`, 'success');
     } catch (err) {
@@ -292,6 +288,11 @@ export const TopToolbar: React.FC = () => {
         label: 'Perspective & Keystone…',
         disabled: !activeLayer || activeLayer.type !== 'raster' || activeLayer.locked,
         action: () => openModal('perspective'),
+      },
+      {
+        label: 'Image & EXIF Metadata…',
+        disabled: !activeDoc,
+        action: () => openModal('exifMetadata'),
       },
       { divider: true },
       {

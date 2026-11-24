@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { X } from 'lucide-react';
+import { constrainCanvasDimensions, MAX_IMAGE_DIMENSION } from '../../persistence/fileAccess';
 import { useEditorStore } from '../../store/useEditorStore';
 
 const PRESETS = [
@@ -24,7 +25,8 @@ export const NewProjectModal: React.FC = () => {
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
     const bg = bgType === 'custom' ? customBg : bgType;
-    createDocument({ name, width, height, backgroundColor: bg });
+    const clamped = constrainCanvasDimensions(width, height);
+    createDocument({ name, width: clamped.width, height: clamped.height, backgroundColor: bg });
     closeModal('newProject');
   };
 
@@ -100,9 +102,13 @@ export const NewProjectModal: React.FC = () => {
               <input
                 type="number"
                 min={1}
-                max={8192}
+                max={MAX_IMAGE_DIMENSION}
                 value={width}
-                onChange={(e) => setWidth(Math.max(1, Number(e.target.value) || 1))}
+                onChange={(e) => {
+                  const clamped = constrainCanvasDimensions(Number(e.target.value) || 1, height);
+                  setWidth(clamped.width);
+                  setHeight(clamped.height);
+                }}
                 className="w-full px-3 py-1.5 rounded-lg border bg-[var(--lp-bg)] font-mono-tabular outline-none focus:border-[#0A84FF]"
                 style={{ borderColor: 'var(--lp-border)' }}
               />
@@ -112,9 +118,13 @@ export const NewProjectModal: React.FC = () => {
               <input
                 type="number"
                 min={1}
-                max={8192}
+                max={MAX_IMAGE_DIMENSION}
                 value={height}
-                onChange={(e) => setHeight(Math.max(1, Number(e.target.value) || 1))}
+                onChange={(e) => {
+                  const clamped = constrainCanvasDimensions(width, Number(e.target.value) || 1);
+                  setWidth(clamped.width);
+                  setHeight(clamped.height);
+                }}
                 className="w-full px-3 py-1.5 rounded-lg border bg-[var(--lp-bg)] font-mono-tabular outline-none focus:border-[#0A84FF]"
                 style={{ borderColor: 'var(--lp-border)' }}
               />

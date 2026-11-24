@@ -6,15 +6,34 @@ import {
   createCanvas,
   generateThumbnailDataUrl,
 } from '../engine/canvasOps';
+import {
+  constrainCanvasDimensions,
+  isSafeRasterDataUrl,
+  MAX_IMAGE_DIMENSION,
+  MAX_IMAGE_PIXELS,
+  parseSerializedProject,
+  sanitizeSvgMarkup,
+} from './projectValidation';
+import { parseExifFromBuffer } from './exifParser';
 import type {
   DocumentState,
   ExportFitMode,
   ExportFormat,
+  ImageExifMetadata,
   Layer,
   RasterLayer,
   SerializedLayer,
   SerializedProject,
 } from '../types/editor';
+
+export {
+  constrainCanvasDimensions,
+  isSafeRasterDataUrl,
+  MAX_IMAGE_DIMENSION,
+  MAX_IMAGE_PIXELS,
+  parseSerializedProject,
+  sanitizeSvgMarkup,
+};
 
 export interface LocalCapabilities {
   fileSystemAccess: boolean;
@@ -51,9 +70,6 @@ export function detectLocalCapabilities(): LocalCapabilities {
   };
 }
 
-export const MAX_IMAGE_DIMENSION = 8192;
-export const MAX_IMAGE_PIXELS = 40_000_000;
-
 export interface DecodedImageResult {
   name: string;
   width: number;
@@ -62,21 +78,23 @@ export interface DecodedImageResult {
   sourceFormat: string;
   fileSizeBytes: number;
   scaledDown: boolean;
+  exif?: ImageExifMetadata | null;
 }
 
 export async function decodeImageFile(file: File): Promise<DecodedImageResult> {
   const ext = file.name.split('.').pop()?.toUpperCase() || 'IMAGE';
 
-  // Handle SVG rasterization cleanly
+  // Handle SVG rasterization cleanly after sanitizing executable tags, handlers, and remote URLs
   if (file.type === 'image/svg+xml' || ext === 'SVG') {
-    const svgText = await file.text();
-    const blob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
+    const rawSvgText = await file.text();
+    const safeSvgText = sanitizeSvgMarkup(rawSvgText);
+    const blob = new Blob([safeSvgText], { type: 'image/svg+xml;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     try {
       const img = await loadHtmlImage(url);
       const rawW = img.naturalWidth || 1200;
       const rawH = img.naturalHeight || 900;
-      const { width, height, scaledDown } = constrainDimensions(rawW, rawH);
+      const { width, height, scaledDown } = constrainCanvasDimensions(rawW, rawH);
       const canvas = createCanvas(width, height);
       const ctx = canvas.getContext('2d')!;
       ctx.drawImage(img, 0, 0, width, height);
@@ -88,10 +106,19 @@ export async function decodeImageFile(file: File): Promise<DecodedImageResult> {
         sourceFormat: 'SVG',
         fileSizeBytes: file.size,
         scaledDown,
+        exif: null,
       };
     } finally {
       URL.revokeObjectURL(url);
     }
+  }
+
+  let exif: ImageExifMetadata | null = null;
+  try {
+    const headerBuf = await file.arrayBuffer();
+    exif = parseExifFromBuffer(headerBuf);
+  } catch {
+    exif = null;
   }
 
   // Prefer createImageBitmap where supported, fallback to HTMLImageElement
@@ -109,7 +136,7 @@ export async function decodeImageFile(file: File): Promise<DecodedImageResult> {
     }
 
     if (bitmap) {
-      const { width, height, scaledDown } = constrainDimensions(bitmap.width, bitmap.height);
+      const { width, height, scaledDown } = constrainCanvasDimensions(bitmap.width, bitmap.height);
       const canvas = createCanvas(width, height);
       const ctx = canvas.getContext('2d')!;
       ctx.imageSmoothingEnabled = true;
@@ -124,12 +151,13 @@ export async function decodeImageFile(file: File): Promise<DecodedImageResult> {
         sourceFormat: ext,
         fileSizeBytes: file.size,
         scaledDown,
+        exif,
       };
     }
 
     url = URL.createObjectURL(file);
     imgEl = await loadHtmlImage(url);
-    const { width, height, scaledDown } = constrainDimensions(
+    const { width, height, scaledDown } = constrainCanvasDimensions(
       imgEl.naturalWidth,
       imgEl.naturalHeight
     );
@@ -146,35 +174,11 @@ export async function decodeImageFile(file: File): Promise<DecodedImageResult> {
       sourceFormat: ext,
       fileSizeBytes: file.size,
       scaledDown,
+      exif,
     };
   } finally {
     if (url) URL.revokeObjectURL(url);
   }
-}
-
-function constrainDimensions(
-  w: number,
-  h: number
-): { width: number; height: number; scaledDown: boolean } {
-  let width = Math.max(1, Math.round(w));
-  let height = Math.max(1, Math.round(h));
-  let scaledDown = false;
-
-  if (width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION) {
-    const scale = MAX_IMAGE_DIMENSION / Math.max(width, height);
-    width = Math.max(1, Math.round(width * scale));
-    height = Math.max(1, Math.round(height * scale));
-    scaledDown = true;
-  }
-
-  if (width * height > MAX_IMAGE_PIXELS) {
-    const scale = Math.sqrt(MAX_IMAGE_PIXELS / (width * height));
-    width = Math.max(1, Math.round(width * scale));
-    height = Math.max(1, Math.round(height * scale));
-    scaledDown = true;
-  }
-
-  return { width, height, scaledDown };
 }
 
 function loadHtmlImage(src: string): Promise<HTMLImageElement> {
@@ -325,6 +329,11 @@ export async function encodeDocumentForExport(
   doc: DocumentState,
   options: ExportOptions
 ): Promise<{ blob: Blob; previewUrl: string }> {
+  const { width: targetWidth, height: targetHeight } = constrainCanvasDimensions(
+    options.width,
+    options.height
+  );
+
   const bgForComposite =
     options.preserveTransparency && (options.format === 'png' || options.format === 'webp' || options.format === 'bmp')
       ? doc.backgroundColor
@@ -341,39 +350,39 @@ export async function encodeDocumentForExport(
   );
 
   let targetCanvas = fullCanvas;
-  if (options.width !== doc.width || options.height !== doc.height) {
-    targetCanvas = createCanvas(options.width, options.height);
+  if (targetWidth !== doc.width || targetHeight !== doc.height) {
+    targetCanvas = createCanvas(targetWidth, targetHeight);
     const tctx = targetCanvas.getContext('2d')!;
     tctx.imageSmoothingEnabled = true;
     tctx.imageSmoothingQuality = 'high';
     if (!options.preserveTransparency || options.format === 'jpeg') {
       tctx.fillStyle = options.matteColor;
-      tctx.fillRect(0, 0, options.width, options.height);
+      tctx.fillRect(0, 0, targetWidth, targetHeight);
     }
 
     const fitMode: ExportFitMode = options.fitMode ?? 'stretch';
     if (fitMode === 'contain') {
-      const s = Math.min(options.width / doc.width, options.height / doc.height);
+      const s = Math.min(targetWidth / doc.width, targetHeight / doc.height);
       const dw = doc.width * s;
       const dh = doc.height * s;
-      const dx = (options.width - dw) / 2;
-      const dy = (options.height - dh) / 2;
+      const dx = (targetWidth - dw) / 2;
+      const dy = (targetHeight - dh) / 2;
       tctx.drawImage(fullCanvas, dx, dy, dw, dh);
     } else if (fitMode === 'cover') {
-      const s = Math.max(options.width / doc.width, options.height / doc.height);
+      const s = Math.max(targetWidth / doc.width, targetHeight / doc.height);
       const dw = doc.width * s;
       const dh = doc.height * s;
-      const dx = (options.width - dw) / 2;
-      const dy = (options.height - dh) / 2;
+      const dx = (targetWidth - dw) / 2;
+      const dy = (targetHeight - dh) / 2;
       tctx.drawImage(fullCanvas, dx, dy, dw, dh);
     } else {
-      tctx.drawImage(fullCanvas, 0, 0, options.width, options.height);
+      tctx.drawImage(fullCanvas, 0, 0, targetWidth, targetHeight);
     }
   } else if (!options.preserveTransparency || options.format === 'jpeg') {
-    const opaque = createCanvas(options.width, options.height);
+    const opaque = createCanvas(targetWidth, targetHeight);
     const octx = opaque.getContext('2d')!;
     octx.fillStyle = options.matteColor;
-    octx.fillRect(0, 0, options.width, options.height);
+    octx.fillRect(0, 0, targetWidth, targetHeight);
     octx.drawImage(fullCanvas, 0, 0);
     targetCanvas = opaque;
   }
@@ -485,21 +494,27 @@ export function serializeDocument(doc: DocumentState): SerializedProject {
     updatedAt: Date.now(),
     sourceFormat: doc.sourceFormat,
     thumbnailDataUrl: generateThumbnailDataUrl(doc),
+    ...(doc.exif ? { exif: doc.exif } : {}),
   };
 }
 
 export async function deserializeProject(
-  data: SerializedProject
+  rawInput: SerializedProject | unknown
 ): Promise<
   Omit<
     DocumentState,
     'history' | 'historyIndex' | 'zoom' | 'panX' | 'panY' | 'selection' | 'dirty'
   >
 > {
+  const data = parseSerializedProject(rawInput);
+
   const layers: Layer[] = await Promise.all(
     data.layers.map(async (sl): Promise<Layer> => {
       let mask = null;
       if (sl.maskDataUrl) {
+        if (!isSafeRasterDataUrl(sl.maskDataUrl)) {
+          throw new Error('Project contains an unsafe layer mask image.');
+        }
         const mCanvas = createCanvas(data.width, data.height);
         const mImg = await loadHtmlImage(sl.maskDataUrl);
         mCanvas.getContext('2d')?.drawImage(mImg, 0, 0, data.width, data.height);
@@ -517,6 +532,9 @@ export async function deserializeProject(
       if (sl.type === 'raster') {
         const canvas = createCanvas(sl.width, sl.height);
         if (sl.rasterDataUrl) {
+          if (!isSafeRasterDataUrl(sl.rasterDataUrl)) {
+            throw new Error('Project contains an unsafe raster image.');
+          }
           const img = await loadHtmlImage(sl.rasterDataUrl);
           const ctx = canvas.getContext('2d');
           ctx?.drawImage(img, 0, 0, sl.width, sl.height);
@@ -566,7 +584,14 @@ export async function deserializeProject(
           effects: restoredEffects,
           parentId: sl.parentId ?? null,
           mask,
-          ...sl.textData,
+          text: sl.textData.text,
+          fontFamily: sl.textData.fontFamily,
+          fontSize: sl.textData.fontSize,
+          fontWeight: sl.textData.fontWeight,
+          fontStyle: sl.textData.fontStyle,
+          color: sl.textData.color,
+          align: sl.textData.align,
+          lineHeight: sl.textData.lineHeight,
         };
       }
 
@@ -620,6 +645,7 @@ export async function deserializeProject(
         };
       }
 
+      const sd = sl.shapeData;
       return {
         id: sl.id,
         name: sl.name,
@@ -640,15 +666,14 @@ export async function deserializeProject(
         effects: restoredEffects,
         parentId: sl.parentId ?? null,
         mask,
-        ...(sl.shapeData ?? {
-          shapeKind: 'rect',
-          fill: '#0A84FF',
-          fillEnabled: true,
-          stroke: '#FFFFFF',
-          strokeEnabled: false,
-          strokeWidth: 2,
-          cornerRadius: 12,
-        }),
+        shapeKind: sd?.shapeKind ?? 'rect',
+        fill: sd?.fill ?? '#0A84FF',
+        fillEnabled: sd?.fillEnabled ?? true,
+        stroke: sd?.stroke ?? '#FFFFFF',
+        strokeEnabled: sd?.strokeEnabled ?? false,
+        strokeWidth: sd?.strokeWidth ?? 2,
+        cornerRadius: sd?.cornerRadius ?? 12,
+        ...(sd?.sides !== undefined ? { sides: sd.sides } : {}),
       };
     })
   );
@@ -661,10 +686,11 @@ export async function deserializeProject(
     backgroundColor: data.backgroundColor,
     activeLayerId: data.activeLayerId,
     editingTarget: 'layer',
-    adjustments: data.adjustments,
+    adjustments: cloneAdjustments(data.adjustments),
     layers,
     createdAt: data.createdAt,
     updatedAt: data.updatedAt,
     sourceFormat: data.sourceFormat || 'LPS',
+    exif: data.exif ?? null,
   };
 }
