@@ -465,6 +465,7 @@ export function serializeDocument(doc: DocumentState): SerializedProject {
         strokeEnabled: layer.strokeEnabled,
         strokeWidth: layer.strokeWidth,
         cornerRadius: layer.cornerRadius,
+        ...(layer.sides !== undefined ? { sides: layer.sides } : {}),
       };
     }
     return base;

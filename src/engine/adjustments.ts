@@ -4,6 +4,9 @@ import type {
   CurvesConfig,
   DocumentState,
   FiltersConfig,
+  GradientMapConfig,
+  HslBandId,
+  HslMixerConfig,
   LevelsConfig,
 } from '../types/editor';
 
@@ -34,6 +37,44 @@ export const DEFAULT_CURVES: CurvesConfig = {
   ],
 };
 
+export const HSL_BAND_META: Array<{
+  id: HslBandId;
+  label: string;
+  centerHue: number;
+  swatch: string;
+}> = [
+  { id: 'red', label: 'Reds', centerHue: 0, swatch: '#FF453A' },
+  { id: 'orange', label: 'Oranges', centerHue: 30, swatch: '#FF9F0A' },
+  { id: 'yellow', label: 'Yellows', centerHue: 60, swatch: '#FFD60A' },
+  { id: 'green', label: 'Greens', centerHue: 120, swatch: '#30D158' },
+  { id: 'aqua', label: 'Aquas', centerHue: 180, swatch: '#64D2FF' },
+  { id: 'blue', label: 'Blues', centerHue: 240, swatch: '#0A84FF' },
+  { id: 'purple', label: 'Purples', centerHue: 275, swatch: '#BF5AF2' },
+  { id: 'magenta', label: 'Magentas', centerHue: 320, swatch: '#FF375F' },
+];
+
+export function createDefaultHslMixer(): HslMixerConfig {
+  return {
+    red: { h: 0, s: 0, l: 0 },
+    orange: { h: 0, s: 0, l: 0 },
+    yellow: { h: 0, s: 0, l: 0 },
+    green: { h: 0, s: 0, l: 0 },
+    aqua: { h: 0, s: 0, l: 0 },
+    blue: { h: 0, s: 0, l: 0 },
+    purple: { h: 0, s: 0, l: 0 },
+    magenta: { h: 0, s: 0, l: 0 },
+  };
+}
+
+export const DEFAULT_HSL_MIXER: HslMixerConfig = createDefaultHslMixer();
+
+export const DEFAULT_GRADIENT_MAP: GradientMapConfig = {
+  enabled: false,
+  shadowColor: '#142038',
+  highlightColor: '#FFD6A5',
+  mix: 100,
+};
+
 export const DEFAULT_FILTERS: FiltersConfig = {
   blur: 0,
   vignette: 0,
@@ -41,6 +82,14 @@ export const DEFAULT_FILTERS: FiltersConfig = {
   noise: 0,
   pixelate: 1,
   denoise: 0,
+  bloom: 0,
+  posterize: 0,
+  chromaticAberration: 0,
+  threshold: 0,
+  lensDistortion: 0,
+  tiltShiftBlur: 0,
+  tiltShiftPos: 50,
+  tiltShiftBand: 25,
 };
 
 export const DEFAULT_ADJUSTMENTS: Adjustments = {
@@ -48,14 +97,21 @@ export const DEFAULT_ADJUSTMENTS: Adjustments = {
   contrast: 0,
   exposure: 0,
   saturation: 0,
+  vibrance: 0,
   hue: 0,
   temperature: 0,
   tint: 0,
   highlights: 0,
   shadows: 0,
+  clarity: 0,
+  fade: 0,
   sharpness: 0,
+  splitTone: 0,
+  splitShadowHue: 220,
+  splitHighlightHue: 40,
   grayscale: false,
   sepia: false,
+  invert: false,
   levels: { ...DEFAULT_LEVELS },
   curves: {
     rgb: DEFAULT_CURVES.rgb.map((p) => ({ ...p })),
@@ -64,6 +120,8 @@ export const DEFAULT_ADJUSTMENTS: Adjustments = {
     b: DEFAULT_CURVES.b.map((p) => ({ ...p })),
   },
   filters: { ...DEFAULT_FILTERS },
+  hsl: createDefaultHslMixer(),
+  gradientMap: { ...DEFAULT_GRADIENT_MAP },
 };
 
 function isIdentityCurve(pts?: CurvePoint[]): boolean {
@@ -72,9 +130,28 @@ function isIdentityCurve(pts?: CurvePoint[]): boolean {
   return pts[0].x === 0 && pts[0].y === 0 && pts[1].x === 255 && pts[1].y === 255;
 }
 
+export function cloneHslMixer(hsl?: HslMixerConfig): HslMixerConfig {
+  const out = createDefaultHslMixer();
+  if (!hsl) return out;
+  for (const { id } of HSL_BAND_META) {
+    const b = hsl[id];
+    if (b) {
+      out[id] = { h: b.h ?? 0, s: b.s ?? 0, l: b.l ?? 0 };
+    }
+  }
+  return out;
+}
+
 export function cloneAdjustments(adj: Adjustments): Adjustments {
   return {
     ...adj,
+    vibrance: adj.vibrance ?? 0,
+    clarity: adj.clarity ?? 0,
+    fade: adj.fade ?? 0,
+    splitTone: adj.splitTone ?? 0,
+    splitShadowHue: adj.splitShadowHue ?? 220,
+    splitHighlightHue: adj.splitHighlightHue ?? 40,
+    invert: adj.invert ?? false,
     levels: adj.levels ? { ...adj.levels } : { ...DEFAULT_LEVELS },
     curves: adj.curves
       ? {
@@ -89,12 +166,35 @@ export function cloneAdjustments(adj: Adjustments): Adjustments {
           g: DEFAULT_CURVES.g.map((p) => ({ ...p })),
           b: DEFAULT_CURVES.b.map((p) => ({ ...p })),
         },
-    filters: adj.filters ? { ...adj.filters } : { ...DEFAULT_FILTERS },
+    filters: adj.filters
+      ? {
+          ...DEFAULT_FILTERS,
+          ...adj.filters,
+        }
+      : { ...DEFAULT_FILTERS },
+    hsl: cloneHslMixer(adj.hsl),
+    gradientMap: adj.gradientMap
+      ? { ...DEFAULT_GRADIENT_MAP, ...adj.gradientMap }
+      : { ...DEFAULT_GRADIENT_MAP },
   };
 }
 
 export function cloneDefaultAdjustments(): Adjustments {
   return cloneAdjustments(DEFAULT_ADJUSTMENTS);
+}
+
+export function isDefaultHslMixer(hsl?: HslMixerConfig): boolean {
+  if (!hsl) return true;
+  for (const { id } of HSL_BAND_META) {
+    const b = hsl[id];
+    if (b && (b.h !== 0 || b.s !== 0 || b.l !== 0)) return false;
+  }
+  return true;
+}
+
+export function isDefaultGradientMap(gm?: GradientMapConfig): boolean {
+  if (!gm) return true;
+  return !gm.enabled || gm.mix <= 0;
 }
 
 export function isDefaultLevels(levels?: LevelsConfig): boolean {
@@ -125,7 +225,13 @@ export function isDefaultFilters(filters?: FiltersConfig): boolean {
     filters.vignette === 0 &&
     filters.noise <= 0 &&
     filters.pixelate <= 1 &&
-    (filters.denoise ?? 0) <= 0
+    (filters.denoise ?? 0) <= 0 &&
+    (filters.bloom ?? 0) <= 0 &&
+    (filters.posterize ?? 0) < 2 &&
+    (filters.chromaticAberration ?? 0) <= 0 &&
+    (filters.threshold ?? 0) < 1 &&
+    (filters.lensDistortion ?? 0) === 0 &&
+    (filters.tiltShiftBlur ?? 0) <= 0
   );
 }
 
@@ -135,17 +241,24 @@ export function isDefaultAdjustments(adj: Adjustments): boolean {
     adj.contrast === 0 &&
     adj.exposure === 0 &&
     adj.saturation === 0 &&
+    (adj.vibrance ?? 0) === 0 &&
     adj.hue === 0 &&
     adj.temperature === 0 &&
     adj.tint === 0 &&
     adj.highlights === 0 &&
     adj.shadows === 0 &&
+    (adj.clarity ?? 0) === 0 &&
+    (adj.fade ?? 0) === 0 &&
     adj.sharpness === 0 &&
+    (adj.splitTone ?? 0) <= 0 &&
     !adj.grayscale &&
     !adj.sepia &&
+    !adj.invert &&
     isDefaultLevels(adj.levels) &&
     isDefaultCurves(adj.curves) &&
-    isDefaultFilters(adj.filters)
+    isDefaultFilters(adj.filters) &&
+    isDefaultHslMixer(adj.hsl) &&
+    isDefaultGradientMap(adj.gradientMap)
   );
 }
 
@@ -266,6 +379,15 @@ export interface HistogramData {
   g: Uint32Array;
   b: Uint32Array;
   maxVal: number;
+  totalPixels: number;
+}
+
+export interface HistogramChannelStats {
+  mean: number;
+  median: number;
+  stdDev: number;
+  shadowClipPct: number;
+  highlightClipPct: number;
 }
 
 export function computeHistogram(data: Uint8ClampedArray): HistogramData {
@@ -273,9 +395,11 @@ export function computeHistogram(data: Uint8ClampedArray): HistogramData {
   const r = new Uint32Array(256);
   const g = new Uint32Array(256);
   const b = new Uint32Array(256);
+  let totalPixels = 0;
 
   for (let i = 0; i < data.length; i += 4) {
     if (data[i + 3] < 10) continue;
+    totalPixels++;
     const rv = data[i];
     const gv = data[i + 1];
     const bv = data[i + 2];
@@ -294,7 +418,55 @@ export function computeHistogram(data: Uint8ClampedArray): HistogramData {
     if (g[i] > maxVal) maxVal = g[i];
     if (b[i] > maxVal) maxVal = b[i];
   }
-  return { luma, r, g, b, maxVal };
+  return { luma, r, g, b, maxVal, totalPixels };
+}
+
+export function computeHistogramChannelStats(
+  bins: Uint32Array,
+  totalPixels: number
+): HistogramChannelStats {
+  if (totalPixels <= 0) {
+    return {
+      mean: 0,
+      median: 0,
+      stdDev: 0,
+      shadowClipPct: 0,
+      highlightClipPct: 0,
+    };
+  }
+
+  let sum = 0;
+  for (let i = 0; i < 256; i++) {
+    sum += i * bins[i];
+  }
+  const mean = sum / totalPixels;
+
+  let varSum = 0;
+  let cum = 0;
+  let median = 0;
+  let medianFound = false;
+  const half = totalPixels / 2;
+
+  for (let i = 0; i < 256; i++) {
+    const count = bins[i];
+    if (count > 0) {
+      const diff = i - mean;
+      varSum += diff * diff * count;
+      cum += count;
+      if (!medianFound && cum >= half) {
+        median = i;
+        medianFound = true;
+      }
+    }
+  }
+
+  return {
+    mean,
+    median,
+    stdDev: Math.sqrt(varSum / totalPixels),
+    shadowClipPct: (bins[0] / totalPixels) * 100,
+    highlightClipPct: (bins[255] / totalPixels) * 100,
+  };
 }
 
 function applyPixelate(
@@ -528,6 +700,418 @@ function applyNoise(
   }
 }
 
+function applyBloom(
+  buf: Uint8ClampedArray,
+  width: number,
+  height: number,
+  amount: number
+): void {
+  const t = Math.max(0, Math.min(100, amount)) / 100;
+  if (t <= 0 || width < 3 || height < 3) return;
+
+  const glow = new Uint8ClampedArray(buf.length);
+  const threshold = 165;
+  const invSpan = 1 / (255 - threshold);
+
+  for (let i = 0; i < buf.length; i += 4) {
+    const a = buf[i + 3];
+    if (a === 0) continue;
+    const r = buf[i];
+    const g = buf[i + 1];
+    const b = buf[i + 2];
+    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if (lum <= threshold) {
+      glow[i + 3] = a;
+      continue;
+    }
+    const weight = Math.min(1, (lum - threshold) * invSpan);
+    glow[i] = Math.round(r * weight);
+    glow[i + 1] = Math.round(g * weight);
+    glow[i + 2] = Math.round(b * weight);
+    glow[i + 3] = a;
+  }
+
+  const blurRadius = Math.max(2, Math.min(22, Math.round(2 + t * 14)));
+  applySeparableGaussianBlur(glow, width, height, blurRadius);
+
+  const strength = t * 0.92;
+  for (let i = 0; i < buf.length; i += 4) {
+    if (buf[i + 3] === 0) continue;
+    for (let c = 0; c < 3; c++) {
+      const base = buf[i + c] / 255;
+      const gVal = (glow[i + c] / 255) * strength;
+      const screened = 1 - (1 - base) * (1 - gVal);
+      buf[i + c] = clamp255(Math.round(screened * 255));
+    }
+  }
+}
+
+function applyPosterize(buf: Uint8ClampedArray, levels: number): void {
+  const lv = Math.max(2, Math.min(24, Math.round(levels)));
+  const step = 255 / (lv - 1);
+  for (let i = 0; i < buf.length; i += 4) {
+    if (buf[i + 3] === 0) continue;
+    buf[i] = clamp255(Math.round(Math.round((buf[i] / 255) * (lv - 1)) * step));
+    buf[i + 1] = clamp255(Math.round(Math.round((buf[i + 1] / 255) * (lv - 1)) * step));
+    buf[i + 2] = clamp255(Math.round(Math.round((buf[i + 2] / 255) * (lv - 1)) * step));
+  }
+}
+
+function applyThreshold(buf: Uint8ClampedArray, threshold: number): void {
+  const cutoff = Math.max(1, Math.min(255, Math.round(threshold)));
+  for (let i = 0; i < buf.length; i += 4) {
+    if (buf[i + 3] === 0) continue;
+    const lum = 0.2126 * buf[i] + 0.7152 * buf[i + 1] + 0.0722 * buf[i + 2];
+    const v = lum >= cutoff ? 255 : 0;
+    buf[i] = v;
+    buf[i + 1] = v;
+    buf[i + 2] = v;
+  }
+}
+
+function applyChromaticAberration(
+  buf: Uint8ClampedArray,
+  width: number,
+  height: number,
+  amount: number
+): void {
+  const t = Math.max(0, Math.min(100, amount)) / 100;
+  if (t <= 0 || width < 2 || height < 2) return;
+
+  const copy = new Uint8ClampedArray(buf);
+  const cx = (width - 1) * 0.5;
+  const cy = (height - 1) * 0.5;
+  const maxRadius = Math.max(1, Math.hypot(cx, cy));
+  const maxShift = t * Math.max(4, Math.min(width, height) * 0.018);
+
+  const sampleChannel = (fx: number, fy: number, channelOffset: number): number => {
+    const x = Math.max(0, Math.min(width - 1, fx));
+    const y = Math.max(0, Math.min(height - 1, fy));
+    const ix0 = Math.floor(x);
+    const iy0 = Math.floor(y);
+    const ix1 = Math.min(width - 1, ix0 + 1);
+    const iy1 = Math.min(height - 1, iy0 + 1);
+    const tx = x - ix0;
+    const ty = y - iy0;
+
+    const i00 = (iy0 * width + ix0) * 4 + channelOffset;
+    const i10 = (iy0 * width + ix1) * 4 + channelOffset;
+    const i01 = (iy1 * width + ix0) * 4 + channelOffset;
+    const i11 = (iy1 * width + ix1) * 4 + channelOffset;
+
+    return (
+      copy[i00] * (1 - tx) * (1 - ty) +
+      copy[i10] * tx * (1 - ty) +
+      copy[i01] * (1 - tx) * ty +
+      copy[i11] * tx * ty
+    );
+  };
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      if (copy[idx + 3] === 0) continue;
+      const dx = x - cx;
+      const dy = y - cy;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 0.001) continue;
+      const radialFactor = dist / maxRadius;
+      const shift = maxShift * radialFactor;
+      const ux = dx / dist;
+      const uy = dy / dist;
+      buf[idx] = clamp255(Math.round(sampleChannel(x + ux * shift, y + uy * shift, 0)));
+      buf[idx + 2] = clamp255(Math.round(sampleChannel(x - ux * shift, y - uy * shift, 2)));
+    }
+  }
+}
+
+function hueToCenteredTint(hueDeg: number): [number, number, number] {
+  const h = (((hueDeg % 360) + 360) % 360) / 60;
+  const x = 1 - Math.abs((h % 2) - 1);
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (h < 1) [r, g, b] = [1, x, 0];
+  else if (h < 2) [r, g, b] = [x, 1, 0];
+  else if (h < 3) [r, g, b] = [0, 1, x];
+  else if (h < 4) [r, g, b] = [0, x, 1];
+  else if (h < 5) [r, g, b] = [x, 0, 1];
+  else [r, g, b] = [1, 0, x];
+  return [(r - 0.5) * 2, (g - 0.5) * 2, (b - 0.5) * 2];
+}
+
+function parseHexRgb(hex: string): [number, number, number] {
+  const clean = hex.replace('#', '');
+  const full =
+    clean.length === 3
+      ? clean
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      : clean.padEnd(6, '0');
+  const num = parseInt(full.slice(0, 6), 16);
+  if (!Number.isFinite(num)) return [0, 0, 0];
+  return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
+}
+
+function rgbToHsl01(r: number, g: number, b: number): [number, number, number] {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const l = (max + min) * 0.5;
+  const d = max - min;
+  if (d < 1e-6) return [0, 0, l];
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h = 0;
+  if (max === rn) h = (gn - bn) / d + (gn < bn ? 6 : 0);
+  else if (max === gn) h = (bn - rn) / d + 2;
+  else h = (rn - gn) / d + 4;
+  return [h * 60, s, l];
+}
+
+function hueToRgbChannel(p: number, q: number, t: number): number {
+  let tt = t;
+  if (tt < 0) tt += 1;
+  if (tt > 1) tt -= 1;
+  if (tt < 1 / 6) return p + (q - p) * 6 * tt;
+  if (tt < 1 / 2) return q;
+  if (tt < 2 / 3) return p + (q - p) * (2 / 3 - tt) * 6;
+  return p;
+}
+
+function hsl01ToRgb(hDeg: number, s: number, l: number): [number, number, number] {
+  const h = (((hDeg % 360) + 360) % 360) / 360;
+  if (s <= 1e-6) {
+    const v = l * 255;
+    return [v, v, v];
+  }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  return [
+    hueToRgbChannel(p, q, h + 1 / 3) * 255,
+    hueToRgbChannel(p, q, h) * 255,
+    hueToRgbChannel(p, q, h - 1 / 3) * 255,
+  ];
+}
+
+function applyHslMixer(buf: Uint8ClampedArray, hsl: HslMixerConfig): void {
+  const activeBands = HSL_BAND_META.map((m) => ({
+    center: m.centerHue,
+    adj: hsl[m.id],
+  })).filter((b) => b.adj && (b.adj.h !== 0 || b.adj.s !== 0 || b.adj.l !== 0));
+  if (activeBands.length === 0) return;
+
+  const bandHalfWidth = 42;
+  for (let i = 0; i < buf.length; i += 4) {
+    if (buf[i + 3] === 0) continue;
+    const [hDeg, s, l] = rgbToHsl01(buf[i], buf[i + 1], buf[i + 2]);
+    if (s < 0.02) continue;
+
+    const chromaGate = Math.min(1, s * 4);
+    let dh = 0;
+    let ds = 0;
+    let dl = 0;
+    let wSum = 0;
+
+    for (let k = 0; k < activeBands.length; k++) {
+      const band = activeBands[k];
+      let diff = Math.abs(hDeg - band.center);
+      if (diff > 180) diff = 360 - diff;
+      if (diff >= bandHalfWidth) continue;
+      const w = 0.5 * (1 + Math.cos((Math.PI * diff) / bandHalfWidth));
+      dh += (band.adj.h / 100) * 32 * w;
+      ds += (band.adj.s / 100) * w;
+      dl += (band.adj.l / 100) * 0.35 * w;
+      wSum += w;
+    }
+
+    if (wSum <= 0) continue;
+    const norm = wSum > 1 ? 1 / wSum : 1;
+    const nextH = hDeg + dh * norm * chromaGate;
+    const satDelta = ds * norm * chromaGate;
+    const nextS =
+      satDelta >= 0
+        ? Math.min(1, s + (1 - s) * satDelta * 0.85)
+        : Math.max(0, s * (1 + satDelta));
+    const nextL = Math.max(0, Math.min(1, l + dl * norm * chromaGate));
+    const [nr, ng, nb] = hsl01ToRgb(nextH, nextS, nextL);
+    buf[i] = clamp255(nr);
+    buf[i + 1] = clamp255(ng);
+    buf[i + 2] = clamp255(nb);
+  }
+}
+
+function applyLensDistortion(
+  buf: Uint8ClampedArray,
+  width: number,
+  height: number,
+  amount: number
+): void {
+  if (amount === 0 || width < 3 || height < 3) return;
+  const copy = new Uint8ClampedArray(buf);
+  const cx = (width - 1) * 0.5;
+  const cy = (height - 1) * 0.5;
+  const normR = Math.max(1, Math.min(cx, cy));
+  const k = (-amount / 100) * 0.42;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const dx = (x - cx) / normR;
+      const dy = (y - cy) / normR;
+      const r2 = dx * dx + dy * dy;
+      const scale = 1 + k * r2;
+      const sx = cx + dx * scale * normR;
+      const sy = cy + dy * scale * normR;
+      const outIdx = (y * width + x) * 4;
+
+      if (sx < 0 || sy < 0 || sx > width - 1 || sy > height - 1) {
+        buf[outIdx] = 0;
+        buf[outIdx + 1] = 0;
+        buf[outIdx + 2] = 0;
+        buf[outIdx + 3] = 0;
+        continue;
+      }
+
+      const x0 = Math.floor(sx);
+      const y0 = Math.floor(sy);
+      const x1 = Math.min(width - 1, x0 + 1);
+      const y1 = Math.min(height - 1, y0 + 1);
+      const tx = sx - x0;
+      const ty = sy - y0;
+      const i00 = (y0 * width + x0) * 4;
+      const i10 = (y0 * width + x1) * 4;
+      const i01 = (y1 * width + x0) * 4;
+      const i11 = (y1 * width + x1) * 4;
+
+      for (let c = 0; c < 4; c++) {
+        buf[outIdx + c] = clamp255(
+          Math.round(
+            copy[i00 + c] * (1 - tx) * (1 - ty) +
+              copy[i10 + c] * tx * (1 - ty) +
+              copy[i01 + c] * (1 - tx) * ty +
+              copy[i11 + c] * tx * ty
+          )
+        );
+      }
+    }
+  }
+}
+
+function applyTiltShiftBlur(
+  buf: Uint8ClampedArray,
+  width: number,
+  height: number,
+  radius: number,
+  posPct: number,
+  bandPct: number
+): void {
+  if (radius <= 0 || width < 3 || height < 3) return;
+  const blurred = new Uint8ClampedArray(buf);
+  applySeparableGaussianBlur(blurred, width, height, radius);
+  const centerY = Math.max(0.05, Math.min(0.95, posPct / 100)) * height;
+  const halfSharp = Math.max(2, (Math.max(5, Math.min(60, bandPct)) / 200) * height);
+  const feather = Math.max(8, height * 0.18);
+
+  for (let y = 0; y < height; y++) {
+    const dist = Math.abs(y - centerY) - halfSharp;
+    if (dist <= 0) continue;
+    const t = Math.min(1, dist / feather);
+    const blend = t * t * (3 - 2 * t);
+    const rowOff = y * width;
+    for (let x = 0; x < width; x++) {
+      const i = (rowOff + x) * 4;
+      if (buf[i + 3] === 0) continue;
+      buf[i] = clamp255(Math.round(buf[i] * (1 - blend) + blurred[i] * blend));
+      buf[i + 1] = clamp255(Math.round(buf[i + 1] * (1 - blend) + blurred[i + 1] * blend));
+      buf[i + 2] = clamp255(Math.round(buf[i + 2] * (1 - blend) + blurred[i + 2] * blend));
+    }
+  }
+}
+
+/**
+ * O(W*H) separable box blur over luminance plane for local midtone micro-contrast (Clarity).
+ */
+function applyClarity(
+  buf: Uint8ClampedArray,
+  width: number,
+  height: number,
+  clarityAmount: number
+): void {
+  if (clarityAmount === 0 || width < 3 || height < 3) return;
+  const n = width * height;
+  const lum = new Float32Array(n);
+  for (let p = 0; p < n; p++) {
+    const i = p * 4;
+    lum[p] = 0.2126 * buf[i] + 0.7152 * buf[i + 1] + 0.0722 * buf[i + 2];
+  }
+
+  const radius = Math.max(2, Math.min(8, Math.round(Math.min(width, height) * 0.02)));
+  const horiz = new Float32Array(n);
+  const blurred = new Float32Array(n);
+
+  // Horizontal sliding window
+  for (let y = 0; y < height; y++) {
+    const rowOff = y * width;
+    let sum = 0;
+    let count = 0;
+    for (let x = 0; x <= Math.min(width - 1, radius); x++) {
+      sum += lum[rowOff + x];
+      count++;
+    }
+    for (let x = 0; x < width; x++) {
+      horiz[rowOff + x] = sum / count;
+      const removeIdx = x - radius;
+      if (removeIdx >= 0) {
+        sum -= lum[rowOff + removeIdx];
+        count--;
+      }
+      const addIdx = x + radius + 1;
+      if (addIdx < width) {
+        sum += lum[rowOff + addIdx];
+        count++;
+      }
+    }
+  }
+
+  // Vertical sliding window
+  for (let x = 0; x < width; x++) {
+    let sum = 0;
+    let count = 0;
+    for (let y = 0; y <= Math.min(height - 1, radius); y++) {
+      sum += horiz[y * width + x];
+      count++;
+    }
+    for (let y = 0; y < height; y++) {
+      blurred[y * width + x] = sum / count;
+      const removeY = y - radius;
+      if (removeY >= 0) {
+        sum -= horiz[removeY * width + x];
+        count--;
+      }
+      const addY = y + radius + 1;
+      if (addY < height) {
+        sum += horiz[addY * width + x];
+        count++;
+      }
+    }
+  }
+
+  const strength = (clarityAmount / 100) * 1.35;
+  for (let p = 0; p < n; p++) {
+    const i = p * 4;
+    if (buf[i + 3] === 0) continue;
+    const l = lum[p];
+    const lumNorm = l / 255;
+    const midtoneWeight = 0.25 + 0.75 * (4 * lumNorm * (1 - lumNorm));
+    const delta = (l - blurred[p]) * strength * midtoneWeight;
+    buf[i] = clamp255(buf[i] + delta);
+    buf[i + 1] = clamp255(buf[i + 1] + delta);
+    buf[i + 2] = clamp255(buf[i + 2] + delta);
+  }
+}
+
 /**
  * Pure pixel-buffer color, Levels, Curves & non-destructive Filter pipeline.
  * Operates cleanly in both Web Workers and unit tests.
@@ -557,6 +1141,20 @@ export function applyAdjustmentsToBuffer(
   const tempShift = (adj.temperature / 100) * 38;
   const tintShift = (adj.tint / 100) * 32;
   const satMult = 1 + adj.saturation / 100;
+  const vibranceVal = adj.vibrance ?? 0;
+  const hasVibrance = vibranceVal !== 0;
+  const fadeVal = adj.fade ?? 0;
+  const hasFade = fadeVal > 0;
+  const fadeLift = (fadeVal / 100) * 58;
+  const fadeScale = 1 - fadeLift / 255;
+  const hasInvert = Boolean(adj.invert);
+  const clarityVal = adj.clarity ?? 0;
+  const splitToneVal = adj.splitTone ?? 0;
+  const hasSplitTone = splitToneVal > 0;
+  const splitShadowTint = hasSplitTone ? hueToCenteredTint(adj.splitShadowHue ?? 220) : [0, 0, 0];
+  const splitHighlightTint = hasSplitTone ? hueToCenteredTint(adj.splitHighlightHue ?? 40) : [0, 0, 0];
+  const splitStrength = (splitToneVal / 100) * 52;
+
   const hueRad = (adj.hue * Math.PI) / 180;
   const cosH = Math.cos(hueRad);
   const sinH = Math.sin(hueRad);
@@ -587,6 +1185,17 @@ export function applyAdjustmentsToBuffer(
   const curveRLut = useCurves && adj.curves ? buildSplineCurveLut(adj.curves.r) : null;
   const curveGLut = useCurves && adj.curves ? buildSplineCurveLut(adj.curves.g) : null;
   const curveBLut = useCurves && adj.curves ? buildSplineCurveLut(adj.curves.b) : null;
+
+  const hasGradientMap = Boolean(adj.gradientMap?.enabled && (adj.gradientMap?.mix ?? 0) > 0);
+  const gmShadow = hasGradientMap && adj.gradientMap
+    ? parseHexRgb(adj.gradientMap.shadowColor)
+    : ([0, 0, 0] as [number, number, number]);
+  const gmHighlight = hasGradientMap && adj.gradientMap
+    ? parseHexRgb(adj.gradientMap.highlightColor)
+    : ([255, 255, 255] as [number, number, number]);
+  const gmMix = hasGradientMap && adj.gradientMap
+    ? Math.max(0, Math.min(1, adj.gradientMap.mix / 100))
+    : 0;
 
   for (let i = 0; i < len; i += 4) {
     const a = src[i + 3];
@@ -679,6 +1288,21 @@ export function applyAdjustmentsToBuffer(
       b = luma + (b - luma) * satMult;
     }
 
+    // 9b. Vibrance (boosts muted tones without oversaturating already-vivid / skin hues)
+    if (hasVibrance) {
+      const cMax = Math.max(r, g, b);
+      const cMin = Math.min(r, g, b);
+      const sat = Math.max(0, Math.min(1, (cMax - cMin) / 255));
+      const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      const vibFactor =
+        vibranceVal >= 0
+          ? 1 + (vibranceVal / 100) * 1.15 * (1 - sat)
+          : Math.max(0, 1 + (vibranceVal / 100) * (0.35 + 0.65 * (1 - sat)));
+      r = luma + (r - luma) * vibFactor;
+      g = luma + (g - luma) * vibFactor;
+      b = luma + (b - luma) * vibFactor;
+    }
+
     // 10. Grayscale
     if (adj.grayscale) {
       const gray = 0.2126 * r + 0.7152 * g + 0.0722 * b;
@@ -697,10 +1321,50 @@ export function applyAdjustmentsToBuffer(
       b = sb;
     }
 
+    // 11b. Invert
+    if (hasInvert) {
+      r = 255 - clamp255(r);
+      g = 255 - clamp255(g);
+      b = 255 - clamp255(b);
+    }
+
+    // 11c. Matte Fade (lift black point without blowing out highlights)
+    if (hasFade) {
+      r = fadeLift + clamp255(r) * fadeScale;
+      g = fadeLift + clamp255(g) * fadeScale;
+      b = fadeLift + clamp255(b) * fadeScale;
+    }
+
+    // 11d. Split Tone (color-grade shadows and highlights independently)
+    if (hasSplitTone) {
+      const lumaNorm = Math.max(0, Math.min(1, (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255));
+      const shadowW = (1 - lumaNorm) * (1 - lumaNorm);
+      const highW = lumaNorm * lumaNorm;
+      r += (splitShadowTint[0] * shadowW + splitHighlightTint[0] * highW) * splitStrength;
+      g += (splitShadowTint[1] * shadowW + splitHighlightTint[1] * highW) * splitStrength;
+      b += (splitShadowTint[2] * shadowW + splitHighlightTint[2] * highW) * splitStrength;
+    }
+
+    // 11e. Duotone Gradient Map (blend luminance ramp between shadow and highlight color)
+    if (hasGradientMap) {
+      const t = Math.max(0, Math.min(1, (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255));
+      const mr = gmShadow[0] + (gmHighlight[0] - gmShadow[0]) * t;
+      const mg = gmShadow[1] + (gmHighlight[1] - gmShadow[1]) * t;
+      const mb = gmShadow[2] + (gmHighlight[2] - gmShadow[2]) * t;
+      r = r * (1 - gmMix) + mr * gmMix;
+      g = g * (1 - gmMix) + mg * gmMix;
+      b = b * (1 - gmMix) + mb * gmMix;
+    }
+
     dst[i] = clamp255(r);
     dst[i + 1] = clamp255(g);
     dst[i + 2] = clamp255(b);
     dst[i + 3] = a;
+  }
+
+  // 11f. Selective HSL Color Mixer
+  if (!isDefaultHslMixer(adj.hsl) && adj.hsl) {
+    applyHslMixer(dst, adj.hsl);
   }
 
   // 12. 3x3 Unsharp-mask sharpness
@@ -730,12 +1394,20 @@ export function applyAdjustmentsToBuffer(
     }
   }
 
-  // 13. Non-destructive Filters (Pixelate -> Gaussian Blur -> Vignette -> Noise)
+  // 12b. Clarity (local midtone micro-contrast)
+  if (clarityVal !== 0 && width > 2 && height > 2) {
+    applyClarity(dst, width, height, clarityVal);
+  }
+
+  // 13. Non-destructive Filters (Denoise -> Lens Distortion -> Pixelate -> Blur -> Tilt-Shift -> Chromatic Aberration -> Bloom -> Vignette -> Posterize -> Threshold -> Noise)
   const filters = adj.filters;
   if (filters) {
     // Denoise first so later filters (and film noise) are not smoothed away.
     if ((filters.denoise ?? 0) > 0) {
       applyDenoise(dst, width, height, filters.denoise ?? 0);
+    }
+    if ((filters.lensDistortion ?? 0) !== 0) {
+      applyLensDistortion(dst, width, height, filters.lensDistortion ?? 0);
     }
     if (filters.pixelate > 1) {
       applyPixelate(dst, width, height, filters.pixelate);
@@ -743,8 +1415,30 @@ export function applyAdjustmentsToBuffer(
     if (filters.blur > 0) {
       applySeparableGaussianBlur(dst, width, height, filters.blur);
     }
+    if ((filters.tiltShiftBlur ?? 0) > 0) {
+      applyTiltShiftBlur(
+        dst,
+        width,
+        height,
+        filters.tiltShiftBlur ?? 0,
+        filters.tiltShiftPos ?? 50,
+        filters.tiltShiftBand ?? 25
+      );
+    }
+    if ((filters.chromaticAberration ?? 0) > 0) {
+      applyChromaticAberration(dst, width, height, filters.chromaticAberration ?? 0);
+    }
+    if ((filters.bloom ?? 0) > 0) {
+      applyBloom(dst, width, height, filters.bloom ?? 0);
+    }
     if (filters.vignette !== 0) {
       applyVignette(dst, width, height, filters.vignette, filters.vignetteMidpoint);
+    }
+    if ((filters.posterize ?? 0) >= 2) {
+      applyPosterize(dst, filters.posterize ?? 0);
+    }
+    if ((filters.threshold ?? 0) >= 1) {
+      applyThreshold(dst, filters.threshold ?? 0);
     }
     if (filters.noise > 0) {
       applyNoise(dst, width, height, filters.noise);

@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import {
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
   ArrowDown,
   ArrowUp,
   ChevronDown,
@@ -27,15 +30,21 @@ import {
 } from 'lucide-react';
 import {
   cloneAdjustments,
+  createDefaultHslMixer,
   DEFAULT_FILTERS,
+  DEFAULT_GRADIENT_MAP,
   getTargetAdjustments,
+  HSL_BAND_META,
   isDefaultAdjustments,
   isDefaultFilters,
+  isDefaultHslMixer,
 } from '../engine/adjustments';
 import {
   browserPresetStorage,
   deletePreset,
+  FONT_PRESETS,
   loadPresets,
+  QUICK_LOOKS,
   savePreset,
   type AdjustmentPreset,
 } from '../engine/presets';
@@ -48,8 +57,9 @@ import {
   DEFAULT_STROKE,
 } from '../engine/canvasOps';
 import { useEditorStore } from '../store/useEditorStore';
-import type { Adjustments, BlendMode, Layer } from '../types/editor';
+import type { BlendMode, HslBandId, Layer, ShapeKind } from '../types/editor';
 import { CurvesLevelsPanel } from './CurvesLevelsPanel';
+import { HistogramPanel } from './HistogramPanel';
 
 const BLEND_MODES: Array<{ value: BlendMode; label: string }> = [
   { value: 'normal', label: 'Normal' },
@@ -96,82 +106,6 @@ const EffectRange: React.FC<{
     />
   </div>
 );
-
-const BASE_TONE_RESET: Partial<Adjustments> = {
-  brightness: 0,
-  contrast: 0,
-  exposure: 0,
-  saturation: 0,
-  hue: 0,
-  temperature: 0,
-  tint: 0,
-  highlights: 0,
-  shadows: 0,
-  sharpness: 0,
-  grayscale: false,
-  sepia: false,
-};
-
-const QUICK_LOOKS: Array<{ name: string; patch: Partial<Adjustments> }> = [
-  {
-    name: 'Vivid Daylight',
-    patch: {
-      ...BASE_TONE_RESET,
-      contrast: 16,
-      exposure: 0.12,
-      saturation: 22,
-      highlights: -14,
-      shadows: 18,
-      sharpness: 18,
-    },
-  },
-  {
-    name: 'Warm Golden',
-    patch: {
-      ...BASE_TONE_RESET,
-      temperature: 28,
-      tint: 6,
-      contrast: 10,
-      saturation: 14,
-      highlights: -10,
-      shadows: 14,
-    },
-  },
-  {
-    name: 'Cool Crisp',
-    patch: {
-      ...BASE_TONE_RESET,
-      temperature: -22,
-      contrast: 18,
-      highlights: 8,
-      shadows: -6,
-      sharpness: 20,
-    },
-  },
-  {
-    name: 'Matte Film',
-    patch: {
-      ...BASE_TONE_RESET,
-      brightness: 6,
-      contrast: -12,
-      saturation: -14,
-      shadows: 26,
-      highlights: -18,
-      temperature: 8,
-    },
-  },
-  {
-    name: 'Crisp Mono',
-    patch: {
-      ...BASE_TONE_RESET,
-      grayscale: true,
-      contrast: 24,
-      highlights: -10,
-      shadows: 12,
-      sharpness: 18,
-    },
-  },
-];
 
 interface SectionProps {
   title: string;
@@ -230,15 +164,22 @@ export const RightInspector: React.FC = () => {
     addShapeLayer,
     updateLayer,
     updateLayerEffects,
+    clipboardEffects,
+    copyActiveLayerEffects,
+    pasteActiveLayerEffects,
     flipActiveLayer,
     deleteLayer,
     duplicateLayer,
     moveLayerOrder,
     mergeLayerDown,
+    rasterizeActiveLayer,
     reorderLayers,
     alignActiveLayer,
     updateAdjustments,
     updateFilters,
+    updateHslBand,
+    resetHslMixer,
+    updateGradientMap,
     resetFilters,
     commitAdjustmentsHistory,
     applyAutoEnhance,
@@ -259,6 +200,7 @@ export const RightInspector: React.FC = () => {
   const [dragLayerIdx, setDragLayerIdx] = useState<number | null>(null);
   const [presetName, setPresetName] = useState('');
   const [savedPresets, setSavedPresets] = useState<AdjustmentPreset[]>([]);
+  const [activeHslBand, setActiveHslBand] = useState<HslBandId>('red');
 
   useEffect(() => {
     setSavedPresets(loadPresets(browserPresetStorage()));
@@ -279,8 +221,11 @@ export const RightInspector: React.FC = () => {
       | 'contrast'
       | 'highlights'
       | 'shadows'
+      | 'clarity'
+      | 'fade'
       | 'temperature'
       | 'tint'
+      | 'vibrance'
       | 'saturation'
       | 'hue'
       | 'sharpness';
@@ -294,8 +239,11 @@ export const RightInspector: React.FC = () => {
     { key: 'contrast', label: 'Contrast', min: -100, max: 100 },
     { key: 'highlights', label: 'Highlights', min: -100, max: 100 },
     { key: 'shadows', label: 'Shadows', min: -100, max: 100 },
+    { key: 'clarity', label: 'Clarity', min: -100, max: 100 },
+    { key: 'fade', label: 'Matte Fade', min: 0, max: 100 },
     { key: 'temperature', label: 'Temperature', min: -100, max: 100 },
     { key: 'tint', label: 'Tint', min: -100, max: 100 },
+    { key: 'vibrance', label: 'Vibrance', min: -100, max: 100 },
     { key: 'saturation', label: 'Saturation', min: -100, max: 100 },
     { key: 'hue', label: 'Hue', min: -180, max: 180 },
     { key: 'sharpness', label: 'Sharpness', min: 0, max: 100 },
@@ -355,6 +303,15 @@ export const RightInspector: React.FC = () => {
         borderColor: 'var(--lp-border)',
       }}
     >
+      {/* 0. HISTOGRAM PANEL */}
+      <InspectorSection
+        title="Histogram"
+        open={inspectorOpen.histogram}
+        onToggle={() => toggleInspectorPanel('histogram')}
+      >
+        <HistogramPanel />
+      </InspectorSection>
+
       {/* 1. LAYERS PANEL */}
       <InspectorSection
         title="Layers"
@@ -1021,11 +978,50 @@ export const RightInspector: React.FC = () => {
                   className="w-full px-2 py-1 rounded border bg-[var(--lp-panel)] text-[11px]"
                   style={{ borderColor: 'var(--lp-border)' }}
                 />
-                <div className="flex items-center gap-2">
+                <div className="grid grid-cols-2 gap-1.5">
+                  <select
+                    aria-label="Layer font family"
+                    value={activeLayer.fontFamily}
+                    onChange={(e) =>
+                      updateLayer(activeLayer.id, { fontFamily: e.target.value }, 'Font Family')
+                    }
+                    className="w-full px-1.5 py-1 rounded border bg-[var(--lp-panel)] text-[11px]"
+                    style={{ borderColor: 'var(--lp-border)' }}
+                  >
+                    {FONT_PRESETS.map((f) => (
+                      <option key={f.label} value={f.value}>
+                        {f.label}
+                      </option>
+                    ))}
+                    {!FONT_PRESETS.some((f) => f.value === activeLayer.fontFamily) && (
+                      <option value={activeLayer.fontFamily}>Custom Font</option>
+                    )}
+                  </select>
+                  <select
+                    aria-label="Layer font weight"
+                    value={activeLayer.fontWeight}
+                    onChange={(e) =>
+                      updateLayer(
+                        activeLayer.id,
+                        { fontWeight: e.target.value as '400' | '500' | '600' | '700' },
+                        'Font Weight'
+                      )
+                    }
+                    className="w-full px-1.5 py-1 rounded border bg-[var(--lp-panel)] text-[11px]"
+                    style={{ borderColor: 'var(--lp-border)' }}
+                  >
+                    <option value="400">Regular</option>
+                    <option value="500">Medium</option>
+                    <option value="600">Semibold</option>
+                    <option value="700">Bold</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-1.5">
                   <input
                     type="number"
                     min={8}
                     max={400}
+                    aria-label="Layer font size"
                     value={activeLayer.fontSize}
                     onChange={(e) =>
                       updateLayer(
@@ -1034,16 +1030,83 @@ export const RightInspector: React.FC = () => {
                         'Text Size'
                       )
                     }
-                    className="w-16 px-2 py-1 rounded border bg-[var(--lp-panel)] font-mono-tabular"
+                    className="w-14 px-1.5 py-1 rounded border bg-[var(--lp-panel)] font-mono-tabular text-[11px]"
                     style={{ borderColor: 'var(--lp-border)' }}
                   />
+                  <input
+                    type="number"
+                    min={0.8}
+                    max={3}
+                    step={0.05}
+                    aria-label="Layer line height"
+                    title="Line Height"
+                    value={activeLayer.lineHeight}
+                    onChange={(e) =>
+                      updateLayer(
+                        activeLayer.id,
+                        {
+                          lineHeight: Math.max(0.8, Math.min(3, Number(e.target.value) || 1.25)),
+                        },
+                        'Line Height'
+                      )
+                    }
+                    className="w-14 px-1.5 py-1 rounded border bg-[var(--lp-panel)] font-mono-tabular text-[11px]"
+                    style={{ borderColor: 'var(--lp-border)' }}
+                  />
+                  <button
+                    type="button"
+                    title="Toggle Italic"
+                    onClick={() =>
+                      updateLayer(
+                        activeLayer.id,
+                        { fontStyle: activeLayer.fontStyle === 'italic' ? 'normal' : 'italic' },
+                        'Font Style'
+                      )
+                    }
+                    className={`px-2 py-1 rounded border text-[11px] italic font-serif cursor-pointer transition-colors ${
+                      activeLayer.fontStyle === 'italic'
+                        ? 'bg-[#0A84FF] text-white border-[#0A84FF]'
+                        : 'hover:bg-[var(--lp-hover)]'
+                    }`}
+                    style={{
+                      borderColor:
+                        activeLayer.fontStyle === 'italic' ? '#0A84FF' : 'var(--lp-border)',
+                    }}
+                  >
+                    I
+                  </button>
+                  <div className="flex items-center gap-0.5 ml-auto">
+                    {(
+                      [
+                        ['left', AlignLeft],
+                        ['center', AlignCenter],
+                        ['right', AlignRight],
+                      ] as const
+                    ).map(([align, Icon]) => (
+                      <button
+                        key={align}
+                        type="button"
+                        title={`Align ${align}`}
+                        onClick={() =>
+                          updateLayer(activeLayer.id, { align }, 'Text Alignment')
+                        }
+                        className={`p-1 rounded cursor-pointer ${
+                          activeLayer.align === align
+                            ? 'bg-[#0A84FF] text-white'
+                            : 'hover:bg-[var(--lp-hover)]'
+                        }`}
+                      >
+                        <Icon className="w-3 h-3" />
+                      </button>
+                    ))}
+                  </div>
                   <input
                     type="color"
                     value={activeLayer.color}
                     onChange={(e) =>
                       updateLayer(activeLayer.id, { color: e.target.value }, 'Text Color')
                     }
-                    className="w-7 h-6 rounded border bg-transparent cursor-pointer"
+                    className="w-6 h-6 rounded border bg-transparent cursor-pointer shrink-0"
                     style={{ borderColor: 'var(--lp-border)' }}
                   />
                 </div>
@@ -1056,6 +1119,78 @@ export const RightInspector: React.FC = () => {
                 <span className="text-[10px] font-medium text-[var(--lp-text-secondary)] block">
                   Shape Style
                 </span>
+                <div className="flex items-center gap-1.5">
+                  <select
+                    aria-label="Layer shape kind"
+                    value={activeLayer.shapeKind}
+                    onChange={(e) =>
+                      updateLayer(
+                        activeLayer.id,
+                        { shapeKind: e.target.value as ShapeKind },
+                        'Shape Type'
+                      )
+                    }
+                    className="flex-1 min-w-0 px-1.5 py-1 rounded border bg-[var(--lp-panel)] text-[11px]"
+                    style={{ borderColor: 'var(--lp-border)' }}
+                  >
+                    <option value="rounded-rect">Rounded Rect</option>
+                    <option value="rect">Rectangle</option>
+                    <option value="ellipse">Ellipse</option>
+                    <option value="polygon">Polygon</option>
+                    <option value="star">Star</option>
+                    <option value="arrow">Arrow</option>
+                    <option value="line">Line</option>
+                  </select>
+                  {activeLayer.shapeKind === 'rounded-rect' && (
+                    <label className="flex items-center gap-1 text-[10px] text-[var(--lp-text-secondary)] shrink-0">
+                      <span>R</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={200}
+                        aria-label="Corner radius"
+                        value={activeLayer.cornerRadius}
+                        onChange={(e) =>
+                          updateLayer(
+                            activeLayer.id,
+                            {
+                              cornerRadius: Math.max(0, Math.min(200, Number(e.target.value) || 0)),
+                            },
+                            'Corner Radius'
+                          )
+                        }
+                        className="w-12 px-1 py-0.5 rounded border bg-[var(--lp-panel)] font-mono-tabular text-[11px] text-[var(--lp-text)]"
+                        style={{ borderColor: 'var(--lp-border)' }}
+                      />
+                    </label>
+                  )}
+                  {(activeLayer.shapeKind === 'polygon' || activeLayer.shapeKind === 'star') && (
+                    <label className="flex items-center gap-1 text-[10px] text-[var(--lp-text-secondary)] shrink-0">
+                      <span>{activeLayer.shapeKind === 'star' ? 'Pts' : 'Sides'}</span>
+                      <input
+                        type="number"
+                        min={3}
+                        max={16}
+                        aria-label="Polygon or star sides"
+                        value={activeLayer.sides ?? 5}
+                        onChange={(e) =>
+                          updateLayer(
+                            activeLayer.id,
+                            {
+                              sides: Math.max(
+                                3,
+                                Math.min(16, Math.round(Number(e.target.value) || 5))
+                              ),
+                            },
+                            'Shape Sides'
+                          )
+                        }
+                        className="w-11 px-1 py-0.5 rounded border bg-[var(--lp-panel)] font-mono-tabular text-[11px] text-[var(--lp-text)]"
+                        style={{ borderColor: 'var(--lp-border)' }}
+                      />
+                    </label>
+                  )}
+                </div>
                 <div className="flex items-center justify-between">
                   <label className="flex items-center gap-1.5 cursor-pointer">
                     <input
@@ -1126,6 +1261,18 @@ export const RightInspector: React.FC = () => {
               </div>
             )}
 
+            {(activeLayer.type === 'text' || activeLayer.type === 'shape') && (
+              <button
+                type="button"
+                disabled={activeLayer.locked}
+                onClick={rasterizeActiveLayer}
+                className="w-full py-1.5 rounded border text-[11px] font-medium hover:bg-[var(--lp-hover)] disabled:opacity-35 cursor-pointer"
+                style={{ borderColor: 'var(--lp-border)' }}
+              >
+                Rasterize to Pixels
+              </button>
+            )}
+
             <div className="flex items-center gap-1 pt-0.5">
               {(
                 [
@@ -1185,9 +1332,32 @@ export const RightInspector: React.FC = () => {
               className="pt-2.5 border-t space-y-2.5 text-[11px]"
               style={{ borderColor: 'var(--lp-border)' }}
             >
-              <span className="text-[10px] font-medium text-[var(--lp-text-secondary)] block">
-                Layer Effects
-              </span>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-medium text-[var(--lp-text-secondary)]">
+                  Layer Effects
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={copyActiveLayerEffects}
+                    title="Copy active layer effects"
+                    className="px-1.5 py-0.5 rounded border text-[10px] hover:bg-[var(--lp-hover)] cursor-pointer whitespace-nowrap"
+                    style={{ borderColor: 'var(--lp-border)' }}
+                  >
+                    Copy Style
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!clipboardEffects || activeLayer.locked}
+                    onClick={pasteActiveLayerEffects}
+                    title="Paste copied layer effects"
+                    className="px-1.5 py-0.5 rounded border text-[10px] hover:bg-[var(--lp-hover)] disabled:opacity-35 cursor-pointer whitespace-nowrap"
+                    style={{ borderColor: 'var(--lp-border)' }}
+                  >
+                    Paste Style
+                  </button>
+                </div>
+              </div>
 
               {/* Drop Shadow */}
               <div className="space-y-1.5">
@@ -1889,7 +2059,7 @@ export const RightInspector: React.FC = () => {
           <div className="h-px" style={{ backgroundColor: 'var(--lp-border)' }} />
 
           {adjustmentSliders.map((item) => {
-            const val = targetAdj[item.key];
+            const val = targetAdj[item.key] ?? 0;
             return (
               <div key={item.key} className="space-y-1">
                 <div className="flex items-center justify-between text-[11px]">
@@ -1924,7 +2094,323 @@ export const RightInspector: React.FC = () => {
             );
           })}
 
-          <div className="flex items-center gap-2 pt-1">
+          {/* Split Toning */}
+          <div className="pt-2 border-t space-y-2" style={{ borderColor: 'var(--lp-border)' }}>
+            <div className="flex items-center justify-between text-[11px]">
+              <button
+                type="button"
+                title="Double-click to reset split toning"
+                onDoubleClick={() => updateAdjustments({ splitTone: 0 }, 'Reset Split Toning')}
+                className="text-[10px] font-medium text-[var(--lp-text-secondary)] hover:text-[var(--lp-text)] cursor-pointer"
+              >
+                Split Toning
+              </button>
+              <span className="font-mono-tabular text-[11px]">
+                {Math.round(targetAdj.splitTone ?? 0)}
+              </span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={targetAdj.splitTone ?? 0}
+              onChange={(e) => updateAdjustments({ splitTone: Number(e.target.value) })}
+              onPointerUp={() => commitAdjustmentsHistory('Adjust Split Toning')}
+              onKeyUp={() => commitAdjustmentsHistory('Adjust Split Toning')}
+              className="lp-slider w-full"
+              aria-label="Split Toning Strength"
+            />
+            {(targetAdj.splitTone ?? 0) > 0 && (
+              <div className="space-y-2 pl-2 border-l" style={{ borderColor: 'var(--lp-border)' }}>
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="flex items-center gap-1.5 text-[var(--lp-text-secondary)]">
+                      <span
+                        className="w-2.5 h-2.5 rounded-full border"
+                        style={{
+                          backgroundColor: `hsl(${targetAdj.splitShadowHue ?? 220}, 75%, 52%)`,
+                          borderColor: 'var(--lp-border-strong)',
+                        }}
+                      />
+                      Shadow Hue
+                    </span>
+                    <span className="font-mono-tabular">
+                      {Math.round(targetAdj.splitShadowHue ?? 220)}°
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={360}
+                    value={targetAdj.splitShadowHue ?? 220}
+                    onChange={(e) =>
+                      updateAdjustments({ splitShadowHue: Number(e.target.value) })
+                    }
+                    onPointerUp={() => commitAdjustmentsHistory('Adjust Split Shadow Hue')}
+                    onKeyUp={() => commitAdjustmentsHistory('Adjust Split Shadow Hue')}
+                    className="lp-slider w-full"
+                    aria-label="Split Toning Shadow Hue"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="flex items-center gap-1.5 text-[var(--lp-text-secondary)]">
+                      <span
+                        className="w-2.5 h-2.5 rounded-full border"
+                        style={{
+                          backgroundColor: `hsl(${targetAdj.splitHighlightHue ?? 40}, 75%, 52%)`,
+                          borderColor: 'var(--lp-border-strong)',
+                        }}
+                      />
+                      Highlight Hue
+                    </span>
+                    <span className="font-mono-tabular">
+                      {Math.round(targetAdj.splitHighlightHue ?? 40)}°
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={360}
+                    value={targetAdj.splitHighlightHue ?? 40}
+                    onChange={(e) =>
+                      updateAdjustments({ splitHighlightHue: Number(e.target.value) })
+                    }
+                    onPointerUp={() => commitAdjustmentsHistory('Adjust Split Highlight Hue')}
+                    onKeyUp={() => commitAdjustmentsHistory('Adjust Split Highlight Hue')}
+                    className="lp-slider w-full"
+                    aria-label="Split Toning Highlight Hue"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* HSL / Color Mixer (8 Bands) */}
+          {(() => {
+            const hsl = targetAdj.hsl ?? createDefaultHslMixer();
+            const bandVal = hsl[activeHslBand] ?? { h: 0, s: 0, l: 0 };
+            const bandMeta = HSL_BAND_META.find((b) => b.id === activeHslBand) ?? HSL_BAND_META[0];
+            const bandEdited = bandVal.h !== 0 || bandVal.s !== 0 || bandVal.l !== 0;
+            return (
+              <div className="pt-2 border-t space-y-2" style={{ borderColor: 'var(--lp-border)' }}>
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-[10px] font-medium text-[var(--lp-text-secondary)]">
+                    HSL / Color Mixer · {bandMeta.label}
+                  </span>
+                  {!isDefaultHslMixer(hsl) && (
+                    <button
+                      type="button"
+                      onClick={resetHslMixer}
+                      className="text-[10px] text-[#0A84FF] hover:underline cursor-pointer"
+                    >
+                      Reset All
+                    </button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-8 gap-1">
+                  {HSL_BAND_META.map((band) => {
+                    const b = hsl[band.id];
+                    const hasEdit = b && (b.h !== 0 || b.s !== 0 || b.l !== 0);
+                    const isSelected = band.id === activeHslBand;
+                    return (
+                      <button
+                        key={band.id}
+                        type="button"
+                        title={band.label}
+                        aria-label={`HSL ${band.label}`}
+                        onClick={() => setActiveHslBand(band.id)}
+                        className={`relative h-5 rounded border flex items-center justify-center cursor-pointer transition-transform ${
+                          isSelected ? 'ring-2 ring-[#0A84FF] scale-105' : 'opacity-80 hover:opacity-100'
+                        }`}
+                        style={{
+                          backgroundColor: band.swatch,
+                          borderColor: 'var(--lp-border-strong)',
+                        }}
+                      >
+                        {hasEdit && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-white shadow-xs" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="space-y-1.5 pl-2 border-l" style={{ borderColor: 'var(--lp-border)' }}>
+                  {(
+                    [
+                      ['h', 'Hue', `Adjust ${bandMeta.label} Hue`],
+                      ['s', 'Saturation', `Adjust ${bandMeta.label} Saturation`],
+                      ['l', 'Luminance', `Adjust ${bandMeta.label} Luminance`],
+                    ] as const
+                  ).map(([prop, label, commitLabel]) => (
+                    <div key={prop} className="space-y-0.5">
+                      <div className="flex items-center justify-between text-[10px]">
+                        <button
+                          type="button"
+                          title="Double-click to reset"
+                          onDoubleClick={() =>
+                            updateHslBand(activeHslBand, { [prop]: 0 }, `Reset ${bandMeta.label} ${label}`)
+                          }
+                          className="text-[var(--lp-text-secondary)] hover:text-[var(--lp-text)] cursor-pointer"
+                        >
+                          {label}
+                        </button>
+                        <span className="font-mono-tabular">{Math.round(bandVal[prop])}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={-100}
+                        max={100}
+                        value={bandVal[prop]}
+                        onChange={(e) =>
+                          updateHslBand(activeHslBand, { [prop]: Number(e.target.value) })
+                        }
+                        onPointerUp={() => commitAdjustmentsHistory(commitLabel)}
+                        onKeyUp={() => commitAdjustmentsHistory(commitLabel)}
+                        className="lp-slider w-full"
+                        aria-label={`${bandMeta.label} ${label}`}
+                      />
+                    </div>
+                  ))}
+                  {bandEdited && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateHslBand(activeHslBand, { h: 0, s: 0, l: 0 }, `Reset ${bandMeta.label}`)
+                      }
+                      className="text-[10px] text-[var(--lp-text-secondary)] hover:text-[#0A84FF] cursor-pointer"
+                    >
+                      Reset {bandMeta.label}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Gradient Map (Duotone) */}
+          {(() => {
+            const gm = targetAdj.gradientMap ?? DEFAULT_GRADIENT_MAP;
+            return (
+              <div className="pt-2 border-t space-y-2" style={{ borderColor: 'var(--lp-border)' }}>
+                <div className="flex items-center justify-between text-[11px]">
+                  <label className="flex items-center gap-1.5 cursor-pointer text-[10px] font-medium text-[var(--lp-text-secondary)] hover:text-[var(--lp-text)]">
+                    <input
+                      type="checkbox"
+                      checked={gm.enabled}
+                      onChange={(e) =>
+                        updateGradientMap(
+                          { enabled: e.target.checked },
+                          e.target.checked ? 'Enable Gradient Map' : 'Disable Gradient Map'
+                        )
+                      }
+                    />
+                    <span>Gradient Map (Duotone)</span>
+                  </label>
+                  {gm.enabled && (
+                    <span className="font-mono-tabular text-[10px]">{Math.round(gm.mix)}%</span>
+                  )}
+                </div>
+
+                {gm.enabled && (
+                  <div className="space-y-2 pl-2 border-l" style={{ borderColor: 'var(--lp-border)' }}>
+                    <div className="flex items-center gap-2 text-[10px]">
+                      <label className="flex items-center gap-1 text-[var(--lp-text-secondary)]">
+                        <span>Shadow</span>
+                        <input
+                          type="color"
+                          value={gm.shadowColor}
+                          onChange={(e) =>
+                            updateGradientMap(
+                              { shadowColor: e.target.value },
+                              'Gradient Map Shadow'
+                            )
+                          }
+                          className="w-6 h-5 rounded border bg-transparent cursor-pointer"
+                          style={{ borderColor: 'var(--lp-border)' }}
+                        />
+                      </label>
+                      <div
+                        className="flex-1 h-4 rounded border"
+                        style={{
+                          background: `linear-gradient(to right, ${gm.shadowColor}, ${gm.highlightColor})`,
+                          borderColor: 'var(--lp-border-strong)',
+                        }}
+                      />
+                      <label className="flex items-center gap-1 text-[var(--lp-text-secondary)]">
+                        <input
+                          type="color"
+                          value={gm.highlightColor}
+                          onChange={(e) =>
+                            updateGradientMap(
+                              { highlightColor: e.target.value },
+                              'Gradient Map Highlight'
+                            )
+                          }
+                          className="w-6 h-5 rounded border bg-transparent cursor-pointer"
+                          style={{ borderColor: 'var(--lp-border)' }}
+                        />
+                        <span>High</span>
+                      </label>
+                    </div>
+
+                    <div className="space-y-0.5">
+                      <div className="flex justify-between text-[10px] text-[var(--lp-text-secondary)]">
+                        <span>Mix</span>
+                        <span className="font-mono-tabular">{Math.round(gm.mix)}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        value={gm.mix}
+                        onChange={(e) => updateGradientMap({ mix: Number(e.target.value) })}
+                        onPointerUp={() => commitAdjustmentsHistory('Gradient Map Mix')}
+                        onKeyUp={() => commitAdjustmentsHistory('Gradient Map Mix')}
+                        className="lp-slider w-full"
+                        aria-label="Gradient Map Mix"
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap gap-1">
+                      {[
+                        { label: 'Cyanotype', s: '#0D2137', h: '#D6F2FF' },
+                        { label: 'Gold Sepia', s: '#2C1B12', h: '#FCE1B6' },
+                        { label: 'Infrared', s: '#2B0938', h: '#FF8A65' },
+                        { label: 'Midnight', s: '#0B132B', h: '#6FFFE9' },
+                      ].map((swatch) => (
+                        <button
+                          key={swatch.label}
+                          type="button"
+                          onClick={() =>
+                            updateGradientMap(
+                              {
+                                enabled: true,
+                                shadowColor: swatch.s,
+                                highlightColor: swatch.h,
+                              },
+                              `Duotone: ${swatch.label}`
+                            )
+                          }
+                          className="px-1.5 py-0.5 rounded border text-[10px] hover:border-[#0A84FF] cursor-pointer whitespace-nowrap"
+                          style={{
+                            backgroundColor: 'var(--lp-panel)',
+                            borderColor: 'var(--lp-border)',
+                          }}
+                        >
+                          {swatch.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          <div className="flex items-center gap-1.5 pt-1">
             <button
               type="button"
               onClick={() =>
@@ -1959,6 +2445,22 @@ export const RightInspector: React.FC = () => {
               }}
             >
               Sepia
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                updateAdjustments({ invert: !targetAdj.invert }, 'Toggle Invert')
+              }
+              className={`flex-1 py-1.5 rounded border text-[11px] font-medium cursor-pointer transition-colors ${
+                targetAdj.invert
+                  ? 'bg-[#0A84FF] text-white border-[#0A84FF]'
+                  : 'hover:bg-[var(--lp-hover)]'
+              }`}
+              style={{
+                borderColor: targetAdj.invert ? '#0A84FF' : 'var(--lp-border)',
+              }}
+            >
+              Invert
             </button>
           </div>
         </div>
@@ -2096,6 +2598,158 @@ export const RightInspector: React.FC = () => {
               className="lp-slider w-full"
             />
           </div>
+
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[var(--lp-text-secondary)]">Highlight Bloom</span>
+              <span className="font-mono-tabular">{filters.bloom ?? 0}</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={filters.bloom ?? 0}
+              onChange={(e) => updateFilters({ bloom: Number(e.target.value) })}
+              onPointerUp={() => commitAdjustmentsHistory('Filter: Highlight Bloom')}
+              onKeyUp={() => commitAdjustmentsHistory('Filter: Highlight Bloom')}
+              className="lp-slider w-full"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[var(--lp-text-secondary)]">Posterize</span>
+              <span className="font-mono-tabular">
+                {(filters.posterize ?? 0) < 2 ? 'Off' : `${filters.posterize} lv`}
+              </span>
+            </div>
+            <input
+              type="range"
+              min={1}
+              max={24}
+              value={(filters.posterize ?? 0) >= 2 ? filters.posterize : 1}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                updateFilters({ posterize: v <= 1 ? 0 : v });
+              }}
+              onPointerUp={() => commitAdjustmentsHistory('Filter: Posterize')}
+              onKeyUp={() => commitAdjustmentsHistory('Filter: Posterize')}
+              className="lp-slider w-full"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[var(--lp-text-secondary)]">Chromatic Aberration</span>
+              <span className="font-mono-tabular">{filters.chromaticAberration ?? 0}</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={filters.chromaticAberration ?? 0}
+              onChange={(e) => updateFilters({ chromaticAberration: Number(e.target.value) })}
+              onPointerUp={() => commitAdjustmentsHistory('Filter: Chromatic Aberration')}
+              onKeyUp={() => commitAdjustmentsHistory('Filter: Chromatic Aberration')}
+              className="lp-slider w-full"
+              aria-label="Chromatic Aberration"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[var(--lp-text-secondary)]">Threshold</span>
+              <span className="font-mono-tabular">
+                {(filters.threshold ?? 0) < 1 ? 'Off' : filters.threshold}
+              </span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={255}
+              value={filters.threshold ?? 0}
+              onChange={(e) => updateFilters({ threshold: Number(e.target.value) })}
+              onPointerUp={() => commitAdjustmentsHistory('Filter: Threshold')}
+              onKeyUp={() => commitAdjustmentsHistory('Filter: Threshold')}
+              className="lp-slider w-full"
+              aria-label="Threshold"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[var(--lp-text-secondary)]">Lens Distortion</span>
+              <span className="font-mono-tabular">{filters.lensDistortion ?? 0}</span>
+            </div>
+            <input
+              type="range"
+              min={-100}
+              max={100}
+              value={filters.lensDistortion ?? 0}
+              onChange={(e) => updateFilters({ lensDistortion: Number(e.target.value) })}
+              onPointerUp={() => commitAdjustmentsHistory('Filter: Lens Distortion')}
+              onKeyUp={() => commitAdjustmentsHistory('Filter: Lens Distortion')}
+              className="lp-slider w-full"
+              aria-label="Lens Distortion"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[var(--lp-text-secondary)]">Tilt-Shift Blur</span>
+              <span className="font-mono-tabular">{filters.tiltShiftBlur ?? 0} px</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={35}
+              value={filters.tiltShiftBlur ?? 0}
+              onChange={(e) => updateFilters({ tiltShiftBlur: Number(e.target.value) })}
+              onPointerUp={() => commitAdjustmentsHistory('Filter: Tilt-Shift Blur')}
+              onKeyUp={() => commitAdjustmentsHistory('Filter: Tilt-Shift Blur')}
+              className="lp-slider w-full"
+              aria-label="Tilt-Shift Blur"
+            />
+          </div>
+
+          {(filters.tiltShiftBlur ?? 0) > 0 && (
+            <div className="space-y-2 pl-2 border-l" style={{ borderColor: 'var(--lp-border)' }}>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className="text-[var(--lp-text-secondary)]">Focus Position</span>
+                  <span className="font-mono-tabular">{filters.tiltShiftPos ?? 50}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={10}
+                  max={90}
+                  value={filters.tiltShiftPos ?? 50}
+                  onChange={(e) => updateFilters({ tiltShiftPos: Number(e.target.value) })}
+                  onPointerUp={() => commitAdjustmentsHistory('Filter: Tilt-Shift Position')}
+                  onKeyUp={() => commitAdjustmentsHistory('Filter: Tilt-Shift Position')}
+                  className="lp-slider w-full"
+                  aria-label="Tilt-Shift Focus Position"
+                />
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className="text-[var(--lp-text-secondary)]">Focus Band</span>
+                  <span className="font-mono-tabular">{filters.tiltShiftBand ?? 25}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={5}
+                  max={60}
+                  value={filters.tiltShiftBand ?? 25}
+                  onChange={(e) => updateFilters({ tiltShiftBand: Number(e.target.value) })}
+                  onPointerUp={() => commitAdjustmentsHistory('Filter: Tilt-Shift Band')}
+                  onKeyUp={() => commitAdjustmentsHistory('Filter: Tilt-Shift Band')}
+                  className="lp-slider w-full"
+                  aria-label="Tilt-Shift Focus Band"
+                />
+              </div>
+            </div>
+          )}
         </div>
       </InspectorSection>
 

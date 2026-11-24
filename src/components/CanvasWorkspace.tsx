@@ -2,31 +2,63 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { cropRatioFor } from '../engine/cropRatio';
 import { isDefaultAdjustments } from '../engine/adjustments';
 import {
+  applyBlurSharpenDab,
   applyCloneStampDab,
+  applyDodgeBurnDab,
   applyGradientToCanvas,
+  applyRedEyeRemovalDab,
   applySelectionClipToContext,
+  applySmudgeDab,
   applySpotHealDab,
   cloneCanvas,
   compositeLayersToCanvas,
   computeLayerResizeRect,
   computeMagicWandSelection,
   computePolygonBounds,
+  computeShapePathPoints,
   computeSnapGuides,
   createCanvas,
   docPointToLayerLocal,
   floodFillCanvas,
   isPointInSelection,
   maskCanvasDiffBySelection,
+  paintColorReplaceDab,
   pickTopmostLayerAtPoint,
   renderLayerNodeToContext,
-  rgbaToHex,
   rotatePointAroundCenter,
+  sampleAverageColorFromCanvas,
   snapRotationAngle,
   traceSelectionBoundarySegments,
 } from '../engine/canvasOps';
 import { processAdjustmentsAsync } from '../engine/workerClient';
 import { useEditorStore } from '../store/useEditorStore';
-import type { CropRect, Layer, SelectionPoint, SnapGuide } from '../types/editor';
+import type {
+  BrushSymmetryMode,
+  CropRect,
+  Layer,
+  SelectionPoint,
+  SnapGuide,
+} from '../types/editor';
+
+function getSymmetryPoints(
+  x: number,
+  y: number,
+  docW: number,
+  docH: number,
+  mode: BrushSymmetryMode
+): Array<{ x: number; y: number }> {
+  if (mode === 'vertical') return [{ x, y }, { x: docW - x, y }];
+  if (mode === 'horizontal') return [{ x, y }, { x, y: docH - y }];
+  if (mode === 'quad') {
+    return [
+      { x, y },
+      { x: docW - x, y },
+      { x, y: docH - y },
+      { x: docW - x, y: docH - y },
+    ];
+  }
+  return [{ x, y }];
+}
 
 type DragMode =
   | { kind: 'none' }
@@ -88,6 +120,20 @@ type DragMode =
       prePaintCanvas: HTMLCanvasElement | null;
       painted: boolean;
     }
+  | {
+      kind: 'dodge-burn';
+      lastDocX: number;
+      lastDocY: number;
+      prePaintCanvas: HTMLCanvasElement | null;
+      painted: boolean;
+    }
+  | {
+      kind: 'smudge-blur';
+      lastDocX: number;
+      lastDocY: number;
+      prePaintCanvas: HTMLCanvasElement | null;
+      painted: boolean;
+    }
   | { kind: 'crop-move'; startDocX: number; startDocY: number; origCrop: CropRect }
   | { kind: 'crop-handle'; handle: string; startDocX: number; startDocY: number; origCrop: CropRect }
   | { kind: 'split-divider' };
@@ -103,6 +149,7 @@ export const CanvasWorkspace: React.FC = () => {
     foregroundColor,
     backgroundColor,
     cropRect,
+    cropStraighten,
     fitTrigger,
     cloneSource,
     viewportSettings,
@@ -121,6 +168,7 @@ export const CanvasWorkspace: React.FC = () => {
     setForegroundColor,
     setEditingTextLayerId,
     setCursorCanvasPos,
+    bumpLiveCanvasTick,
     setSplitPosition,
     showToast,
   } = useEditorStore();
@@ -139,6 +187,7 @@ export const CanvasWorkspace: React.FC = () => {
   const compareCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const adjustVersionRef = useRef(0);
   const cloneAlignedOffsetRef = useRef<{ dx: number; dy: number } | null>(null);
+  const lastHistogramBumpRef = useRef(0);
 
   const [containerSize, setContainerSize] = useState({ width: 800, height: 600 });
   const [spacePressed, setSpacePressed] = useState(false);
@@ -412,8 +461,19 @@ export const CanvasWorkspace: React.FC = () => {
     // Draw composited bitmap
     const afterCanvas = afterCanvasRef.current;
     const beforeCanvas = compareCanvasRef.current ?? beforeCanvasRef.current;
-    ctx.imageSmoothingEnabled = doc.zoom < 2.5;
+    const isStraightening =
+      activeTool === 'crop' && cropRect !== null && Math.abs(cropStraighten) >= 0.01;
+    ctx.imageSmoothingEnabled = doc.zoom < 2.5 || isStraightening;
     ctx.imageSmoothingQuality = 'high';
+
+    ctx.save();
+    if (isStraightening && cropRect) {
+      const pivotX = origin.x + (cropRect.x + cropRect.width / 2) * doc.zoom;
+      const pivotY = origin.y + (cropRect.y + cropRect.height / 2) * doc.zoom;
+      ctx.translate(pivotX, pivotY);
+      ctx.rotate((cropStraighten * Math.PI) / 180);
+      ctx.translate(-pivotX, -pivotY);
+    }
 
     if (
       viewportSettings.beforeAfterMode === 'hold' &&
@@ -452,6 +512,7 @@ export const CanvasWorkspace: React.FC = () => {
     } else if (afterCanvas) {
       ctx.drawImage(afterCanvas, origin.x, origin.y, drawW, drawH);
     }
+    ctx.restore();
 
     // Optional grid
     if (viewportSettings.showGrid) {
@@ -747,6 +808,33 @@ export const CanvasWorkspace: React.FC = () => {
       ctx.restore();
     }
 
+    // Brush / Eraser Symmetry Axes
+    if (
+      (activeTool === 'brush' || activeTool === 'eraser') &&
+      toolOptions.brushSymmetry !== 'off'
+    ) {
+      const sym = toolOptions.brushSymmetry;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(10, 132, 255, 0.72)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([6, 4]);
+      if (sym === 'vertical' || sym === 'quad') {
+        const vx = origin.x + drawW / 2;
+        ctx.beginPath();
+        ctx.moveTo(vx, origin.y);
+        ctx.lineTo(vx, origin.y + drawH);
+        ctx.stroke();
+      }
+      if (sym === 'horizontal' || sym === 'quad') {
+        const hy = origin.y + drawH / 2;
+        ctx.beginPath();
+        ctx.moveTo(origin.x, hy);
+        ctx.lineTo(origin.x + drawW, hy);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     // Shape Drag Preview
     if (shapePreview) {
       const sx = origin.x + shapePreview.x * doc.zoom;
@@ -759,8 +847,46 @@ export const CanvasWorkspace: React.FC = () => {
       ctx.lineWidth = 1.5;
       if (toolOptions.shapeKind === 'ellipse') {
         ctx.beginPath();
-        ctx.ellipse(sx + sw / 2, sy + sh / 2, sw / 2, sh / 2, 0, 0, Math.PI * 2);
+        ctx.ellipse(
+          sx + sw / 2,
+          sy + sh / 2,
+          Math.max(1, sw / 2),
+          Math.max(1, sh / 2),
+          0,
+          0,
+          Math.PI * 2
+        );
         ctx.stroke();
+      } else if (toolOptions.shapeKind === 'rounded-rect') {
+        const r = Math.min(toolOptions.shapeCornerRadius * doc.zoom, sw / 2, sh / 2);
+        ctx.beginPath();
+        ctx.roundRect(sx, sy, sw, sh, Math.max(0, r));
+        ctx.stroke();
+      } else if (toolOptions.shapeKind === 'line') {
+        ctx.beginPath();
+        ctx.moveTo(sx, sy + sh / 2);
+        ctx.lineTo(sx + sw, sy + sh / 2);
+        ctx.stroke();
+      } else if (
+        toolOptions.shapeKind === 'polygon' ||
+        toolOptions.shapeKind === 'star' ||
+        toolOptions.shapeKind === 'arrow'
+      ) {
+        const pts = computeShapePathPoints(
+          Math.max(1, sw),
+          Math.max(1, sh),
+          toolOptions.shapeKind,
+          toolOptions.shapeSides
+        );
+        if (pts.length > 0) {
+          ctx.beginPath();
+          ctx.moveTo(sx + pts[0].x, sy + pts[0].y);
+          for (let i = 1; i < pts.length; i++) {
+            ctx.lineTo(sx + pts[i].x, sy + pts[i].y);
+          }
+          ctx.closePath();
+          ctx.stroke();
+        }
       } else {
         ctx.strokeRect(sx, sy, sw, sh);
       }
@@ -787,7 +913,22 @@ export const CanvasWorkspace: React.FC = () => {
       ctx.lineWidth = 1.5;
       ctx.strokeRect(cx, cy, cw, ch);
 
-      // Rule of thirds
+      // Rule of thirds (plus finer alignment sub-grid when straightening)
+      if (Math.abs(cropStraighten) >= 0.01) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+        ctx.lineWidth = 1;
+        for (let i = 1; i <= 5; i++) {
+          if (i % 2 === 0) continue;
+          ctx.beginPath();
+          ctx.moveTo(cx + (cw * i) / 6, cy);
+          ctx.lineTo(cx + (cw * i) / 6, cy + ch);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(cx, cy + (ch * i) / 6);
+          ctx.lineTo(cx + cw, cy + (ch * i) / 6);
+          ctx.stroke();
+        }
+      }
       ctx.strokeStyle = 'rgba(255,255,255,0.35)';
       ctx.lineWidth = 1;
       for (let i = 1; i <= 2; i++) {
@@ -822,12 +963,14 @@ export const CanvasWorkspace: React.FC = () => {
       ctx.restore();
     }
 
-    // Brush / Eraser / Clone / Spot Heal cursor ring
+    // Brush / Eraser / Clone / Spot Heal / Dodge-Burn / Smudge-Blur cursor ring
     if (
       (activeTool === 'brush' ||
         activeTool === 'eraser' ||
         activeTool === 'clone-stamp' ||
-        activeTool === 'spot-heal') &&
+        activeTool === 'spot-heal' ||
+        activeTool === 'dodge-burn' ||
+        activeTool === 'smudge-blur') &&
       cursorScreen
     ) {
       const size =
@@ -837,7 +980,11 @@ export const CanvasWorkspace: React.FC = () => {
             ? toolOptions.eraserSize
             : activeTool === 'clone-stamp'
               ? toolOptions.cloneSize
-              : toolOptions.healSize;
+              : activeTool === 'spot-heal'
+                ? toolOptions.healSize
+                : activeTool === 'dodge-burn'
+                  ? toolOptions.dodgeBurnSize
+                  : toolOptions.smudgeBlurSize;
       const radius = Math.max(2, (size * doc.zoom) / 2);
       ctx.save();
       ctx.beginPath();
@@ -863,6 +1010,7 @@ export const CanvasWorkspace: React.FC = () => {
     renderTick,
     activeTool,
     cropRect,
+    cropStraighten,
     cloneSource,
     liveCloneSamplePos,
     liveRotateDeg,
@@ -1043,6 +1191,75 @@ export const CanvasWorkspace: React.FC = () => {
     ctx.restore();
   };
 
+  const stepBrushOrEraser = (
+    targetCanvas: HTMLCanvasElement,
+    activeLayer: Layer,
+    offsetX: number,
+    offsetY: number,
+    scaleX: number,
+    scaleY: number,
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    isEraser: boolean,
+    isMask: boolean
+  ) => {
+    if (!doc) return;
+    const pts0 = getSymmetryPoints(x0, y0, doc.width, doc.height, toolOptions.brushSymmetry);
+    const pts1 = getSymmetryPoints(x1, y1, doc.width, doc.height, toolOptions.brushSymmetry);
+
+    if (!isEraser && !isMask && toolOptions.brushMode === 'color-replace') {
+      const radius = Math.max(0.5, (toolOptions.brushSize * pressureRef.current) / 2);
+      const hardness = toolOptions.brushHardness / 100;
+      const opacity = toolOptions.brushOpacity / 100;
+      const scAvg = Math.max(0.2, ((scaleX || 1) + (scaleY || 1)) / 2);
+      const localRadius = radius / scAvg;
+
+      for (let k = 0; k < pts0.length; k++) {
+        const ax = pts0[k].x;
+        const ay = pts0[k].y;
+        const bx = pts1[k].x;
+        const by = pts1[k].y;
+        const dist = Math.hypot(bx - ax, by - ay);
+        const step = Math.max(1.5, radius * 0.3);
+        const steps = Math.max(1, Math.ceil(dist / step));
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps;
+          const dxDoc = ax + (bx - ax) * t;
+          const dyDoc = ay + (by - ay) * t;
+          const localPt = docPointToLayerLocal(dxDoc, dyDoc, activeLayer);
+          paintColorReplaceDab({
+            targetCanvas,
+            centerX: localPt.x,
+            centerY: localPt.y,
+            radius: localRadius,
+            hardness,
+            opacity,
+            hex: foregroundColor,
+          });
+        }
+      }
+      return;
+    }
+
+    for (let k = 0; k < pts0.length; k++) {
+      paintDab(
+        targetCanvas,
+        offsetX,
+        offsetY,
+        scaleX,
+        scaleY,
+        pts0[k].x,
+        pts0[k].y,
+        pts1[k].x,
+        pts1[k].y,
+        isEraser,
+        isMask
+      );
+    }
+  };
+
   const stepCloneSegment = (
     targetCanvas: HTMLCanvasElement,
     sourceCanvas: HTMLCanvasElement,
@@ -1137,12 +1354,161 @@ export const CanvasWorkspace: React.FC = () => {
         ? { x: dxDoc, y: dyDoc }
         : docPointToLayerLocal(dxDoc, dyDoc, activeLayer);
 
-      const did = applySpotHealDab({
+      const did =
+        toolOptions.spotHealMode === 'red-eye' && !editingMask
+          ? applyRedEyeRemovalDab({
+              targetCanvas,
+              centerX: dstPt.x,
+              centerY: dstPt.y,
+              radius: radius / Math.max(0.2, (scX + scY) / 2),
+              hardness,
+              docOffsetX: offX,
+              docOffsetY: offY,
+              scaleX: scX,
+              scaleY: scY,
+              selection: doc.selection,
+            })
+          : applySpotHealDab({
+              targetCanvas,
+              centerX: dstPt.x,
+              centerY: dstPt.y,
+              radius: radius / Math.max(0.2, (scX + scY) / 2),
+              hardness,
+              docOffsetX: offX,
+              docOffsetY: offY,
+              scaleX: scX,
+              scaleY: scY,
+              selection: doc.selection,
+            });
+      if (did) modified = true;
+    }
+    return modified;
+  };
+
+  const stepDodgeBurnSegment = (
+    targetCanvas: HTMLCanvasElement,
+    editingMask: boolean,
+    activeLayer: Layer,
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number
+  ): boolean => {
+    if (!doc) return false;
+    const radius = Math.max(1, (toolOptions.dodgeBurnSize * pressureRef.current) / 2);
+    const hardness = toolOptions.dodgeBurnHardness / 100;
+    const strength = toolOptions.dodgeBurnStrength / 100;
+    const dist = Math.hypot(x1 - x0, y1 - y0);
+    const step = Math.max(1.5, radius * 0.35);
+    const steps = Math.max(1, Math.ceil(dist / step));
+
+    const offX = editingMask ? 0 : activeLayer.x;
+    const offY = editingMask ? 0 : activeLayer.y;
+    const scX = editingMask ? 1 : activeLayer.scaleX || 1;
+    const scY = editingMask ? 1 : activeLayer.scaleY || 1;
+
+    let modified = false;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const dxDoc = x0 + (x1 - x0) * t;
+      const dyDoc = y0 + (y1 - y0) * t;
+      const dstPt = editingMask
+        ? { x: dxDoc, y: dyDoc }
+        : docPointToLayerLocal(dxDoc, dyDoc, activeLayer);
+
+      const did = applyDodgeBurnDab({
         targetCanvas,
         centerX: dstPt.x,
         centerY: dstPt.y,
         radius: radius / Math.max(0.2, (scX + scY) / 2),
         hardness,
+        strength,
+        mode: toolOptions.dodgeBurnMode,
+        range: toolOptions.dodgeBurnRange,
+        docOffsetX: offX,
+        docOffsetY: offY,
+        scaleX: scX,
+        scaleY: scY,
+        selection: doc.selection,
+      });
+      if (did) modified = true;
+    }
+    return modified;
+  };
+
+  const stepSmudgeBlurSegment = (
+    targetCanvas: HTMLCanvasElement,
+    editingMask: boolean,
+    activeLayer: Layer,
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number
+  ): boolean => {
+    if (!doc) return false;
+    const radius = Math.max(1, (toolOptions.smudgeBlurSize * pressureRef.current) / 2);
+    const hardness = toolOptions.smudgeBlurHardness / 100;
+    const strength = toolOptions.smudgeBlurStrength / 100;
+    const dist = Math.hypot(x1 - x0, y1 - y0);
+    const step = Math.max(1.5, radius * 0.35);
+    const steps = Math.max(1, Math.ceil(dist / step));
+
+    const offX = editingMask ? 0 : activeLayer.x;
+    const offY = editingMask ? 0 : activeLayer.y;
+    const scX = editingMask ? 1 : activeLayer.scaleX || 1;
+    const scY = editingMask ? 1 : activeLayer.scaleY || 1;
+    const localRadius = radius / Math.max(0.2, (scX + scY) / 2);
+
+    if (toolOptions.smudgeBlurMode === 'smudge') {
+      if (dist < 0.05) return false;
+      let modified = false;
+      let prevPt = editingMask
+        ? { x: x0, y: y0 }
+        : docPointToLayerLocal(x0, y0, activeLayer);
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const dxDoc = x0 + (x1 - x0) * t;
+        const dyDoc = y0 + (y1 - y0) * t;
+        const curPt = editingMask
+          ? { x: dxDoc, y: dyDoc }
+          : docPointToLayerLocal(dxDoc, dyDoc, activeLayer);
+        const did = applySmudgeDab({
+          targetCanvas,
+          prevX: prevPt.x,
+          prevY: prevPt.y,
+          currX: curPt.x,
+          currY: curPt.y,
+          radius: localRadius,
+          hardness,
+          strength,
+          docOffsetX: offX,
+          docOffsetY: offY,
+          scaleX: scX,
+          scaleY: scY,
+          selection: doc.selection,
+        });
+        if (did) modified = true;
+        prevPt = curPt;
+      }
+      return modified;
+    }
+
+    let modified = false;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const dxDoc = x0 + (x1 - x0) * t;
+      const dyDoc = y0 + (y1 - y0) * t;
+      const dstPt = editingMask
+        ? { x: dxDoc, y: dyDoc }
+        : docPointToLayerLocal(dxDoc, dyDoc, activeLayer);
+      const did = applyBlurSharpenDab({
+        targetCanvas,
+        centerX: dstPt.x,
+        centerY: dstPt.y,
+        radius: localRadius,
+        hardness,
+        strength,
+        mode: toolOptions.smudgeBlurMode,
         docOffsetX: offX,
         docOffsetY: offY,
         scaleX: scX,
@@ -1156,6 +1522,11 @@ export const CanvasWorkspace: React.FC = () => {
 
   const refreshLivePaintComposite = () => {
     if (!doc) return;
+    const now = performance.now();
+    if (now - lastHistogramBumpRef.current >= 85) {
+      lastHistogramBumpRef.current = now;
+      bumpLiveCanvasTick();
+    }
     const unadjusted = compositeLayersToCanvas(
       doc.width,
       doc.height,
@@ -1265,12 +1636,11 @@ export const CanvasWorkspace: React.FC = () => {
       const py = Math.floor(docY);
       const src = afterCanvasRef.current;
       if (src && px >= 0 && py >= 0 && px < doc.width && py < doc.height) {
-        const ctx = src.getContext('2d', { willReadFrequently: true });
-        if (ctx) {
-          const d = ctx.getImageData(px, py, 1, 1).data;
-          const hex = rgbaToHex(d[0], d[1], d[2]);
+        const hex = sampleAverageColorFromCanvas(src, docX, docY, toolOptions.eyedropperSampleSize);
+        if (hex) {
           setForegroundColor(hex);
-          showToast(`Sampled ${hex}`, 'info');
+          const sz = toolOptions.eyedropperSampleSize;
+          showToast(`Sampled ${hex} (${sz}×${sz})`, 'info');
         }
       }
       return;
@@ -1691,6 +2061,74 @@ export const CanvasWorkspace: React.FC = () => {
       return;
     }
 
+    if (activeTool === 'dodge-burn' || activeTool === 'smudge-blur') {
+      const editingMask = doc.editingTarget === 'mask' && !!activeLayer?.mask;
+      if (!activeLayer) {
+        showToast('Select a layer to retouch.', 'info');
+        return;
+      }
+      if (activeLayer.locked) {
+        showToast('Active layer is locked.', 'info');
+        return;
+      }
+      if (!editingMask && activeLayer.type !== 'raster') {
+        showToast('Select a Raster Layer or Layer Mask to retouch.', 'info');
+        return;
+      }
+
+      const targetCanvas =
+        editingMask && activeLayer.mask
+          ? activeLayer.mask.canvas
+          : activeLayer.type === 'raster'
+            ? activeLayer.canvas
+            : null;
+      if (!targetCanvas) return;
+
+      const prePaintCanvas = doc.selection?.kind === 'mask' ? cloneCanvas(targetCanvas) : null;
+      const painted =
+        activeTool === 'dodge-burn'
+          ? stepDodgeBurnSegment(
+              targetCanvas,
+              editingMask,
+              activeLayer,
+              docX,
+              docY,
+              docX,
+              docY
+            )
+          : stepSmudgeBlurSegment(
+              targetCanvas,
+              editingMask,
+              activeLayer,
+              docX,
+              docY,
+              docX,
+              docY
+            );
+
+      if (doc.selection?.kind === 'mask' && prePaintCanvas) {
+        maskCanvasDiffBySelection(
+          targetCanvas,
+          prePaintCanvas,
+          doc.selection,
+          editingMask ? 0 : activeLayer.x,
+          editingMask ? 0 : activeLayer.y,
+          editingMask ? 1 : activeLayer.scaleX,
+          editingMask ? 1 : activeLayer.scaleY
+        );
+      }
+
+      dragRef.current = {
+        kind: activeTool,
+        lastDocX: docX,
+        lastDocY: docY,
+        prePaintCanvas,
+        painted,
+      };
+      if (painted) refreshLivePaintComposite();
+      return;
+    }
+
     if (activeTool === 'brush' || activeTool === 'eraser') {
       const editingMask = doc.editingTarget === 'mask' && !!activeLayer?.mask;
       if (!activeLayer) {
@@ -1714,16 +2152,21 @@ export const CanvasWorkspace: React.FC = () => {
             : null;
       if (!targetCanvas) return;
 
+      const isColorReplace =
+        activeTool === 'brush' && !editingMask && toolOptions.brushMode === 'color-replace';
       const prePaintCanvas =
-        doc.selection?.kind === 'mask' ? cloneCanvas(targetCanvas) : null;
+        doc.selection && (doc.selection.kind === 'mask' || isColorReplace)
+          ? cloneCanvas(targetCanvas)
+          : null;
 
       const offX = editingMask ? 0 : activeLayer.x;
       const offY = editingMask ? 0 : activeLayer.y;
       const scX = editingMask ? 1 : activeLayer.scaleX;
       const scY = editingMask ? 1 : activeLayer.scaleY;
 
-      paintDab(
+      stepBrushOrEraser(
         targetCanvas,
+        activeLayer,
         offX,
         offY,
         scX,
@@ -1736,7 +2179,7 @@ export const CanvasWorkspace: React.FC = () => {
         editingMask
       );
 
-      if (doc.selection?.kind === 'mask' && prePaintCanvas) {
+      if (doc.selection && prePaintCanvas) {
         maskCanvasDiffBySelection(
           targetCanvas,
           prePaintCanvas,
@@ -2179,6 +2622,58 @@ export const CanvasWorkspace: React.FC = () => {
       return;
     }
 
+    if (d.kind === 'dodge-burn' || d.kind === 'smudge-blur') {
+      const activeLayer = doc.layers.find((l) => l.id === doc.activeLayerId);
+      if (!activeLayer) return;
+      const editingMask = doc.editingTarget === 'mask' && !!activeLayer.mask;
+      const targetCanvas =
+        editingMask && activeLayer.mask
+          ? activeLayer.mask.canvas
+          : activeLayer.type === 'raster'
+            ? activeLayer.canvas
+            : null;
+      if (!targetCanvas) return;
+
+      const did =
+        d.kind === 'dodge-burn'
+          ? stepDodgeBurnSegment(
+              targetCanvas,
+              editingMask,
+              activeLayer,
+              d.lastDocX,
+              d.lastDocY,
+              docX,
+              docY
+            )
+          : stepSmudgeBlurSegment(
+              targetCanvas,
+              editingMask,
+              activeLayer,
+              d.lastDocX,
+              d.lastDocY,
+              docX,
+              docY
+            );
+      if (did) d.painted = true;
+
+      if (doc.selection?.kind === 'mask' && d.prePaintCanvas) {
+        maskCanvasDiffBySelection(
+          targetCanvas,
+          d.prePaintCanvas,
+          doc.selection,
+          editingMask ? 0 : activeLayer.x,
+          editingMask ? 0 : activeLayer.y,
+          editingMask ? 1 : activeLayer.scaleX,
+          editingMask ? 1 : activeLayer.scaleY
+        );
+      }
+
+      d.lastDocX = docX;
+      d.lastDocY = docY;
+      if (did) refreshLivePaintComposite();
+      return;
+    }
+
     if (d.kind === 'paint') {
       const activeLayer = doc.layers.find((l) => l.id === doc.activeLayerId);
       if (!activeLayer) return;
@@ -2196,8 +2691,9 @@ export const CanvasWorkspace: React.FC = () => {
       const scX = editingMask ? 1 : activeLayer.scaleX;
       const scY = editingMask ? 1 : activeLayer.scaleY;
 
-      paintDab(
+      stepBrushOrEraser(
         targetCanvas,
+        activeLayer,
         offX,
         offY,
         scX,
@@ -2210,7 +2706,7 @@ export const CanvasWorkspace: React.FC = () => {
         editingMask
       );
 
-      if (doc.selection?.kind === 'mask' && d.prePaintCanvas) {
+      if (doc.selection && d.prePaintCanvas) {
         maskCanvasDiffBySelection(
           targetCanvas,
           d.prePaintCanvas,
@@ -2314,7 +2810,19 @@ export const CanvasWorkspace: React.FC = () => {
       commitCanvasMutation(editingMask ? 'Clone Stamp Mask' : 'Clone Stamp');
     } else if (d.kind === 'heal' && d.painted) {
       const editingMask = doc?.editingTarget === 'mask';
-      commitCanvasMutation(editingMask ? 'Spot Heal Mask' : 'Spot Heal');
+      commitCanvasMutation(
+        editingMask
+          ? 'Spot Heal Mask'
+          : toolOptions.spotHealMode === 'red-eye'
+            ? 'Red-Eye Removal'
+            : 'Spot Heal'
+      );
+    } else if (d.kind === 'dodge-burn' && d.painted) {
+      const editingMask = doc?.editingTarget === 'mask';
+      commitCanvasMutation(editingMask ? 'Dodge/Burn Mask' : 'Dodge/Burn Stroke');
+    } else if (d.kind === 'smudge-blur' && d.painted) {
+      const editingMask = doc?.editingTarget === 'mask';
+      commitCanvasMutation(editingMask ? 'Smudge/Detail Mask' : 'Smudge/Detail Stroke');
     } else if (d.kind === 'paint' && d.painted) {
       const editingMask = doc?.editingTarget === 'mask';
       commitCanvasMutation(
@@ -2324,7 +2832,9 @@ export const CanvasWorkspace: React.FC = () => {
             : 'Mask Brush Stroke'
           : activeTool === 'eraser'
             ? 'Eraser Stroke'
-            : 'Brush Stroke'
+            : toolOptions.brushMode === 'color-replace'
+              ? 'Color Replace Brush'
+              : 'Brush Stroke'
       );
     } else if (d.kind === 'shape') {
       const x = Math.min(d.startDocX, d.curDocX);
@@ -2393,7 +2903,9 @@ export const CanvasWorkspace: React.FC = () => {
       activeTool === 'brush' ||
       activeTool === 'eraser' ||
       activeTool === 'clone-stamp' ||
-      activeTool === 'spot-heal'
+      activeTool === 'spot-heal' ||
+      activeTool === 'dodge-burn' ||
+      activeTool === 'smudge-blur'
     ) {
       return 'none';
     }

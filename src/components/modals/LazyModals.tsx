@@ -9,9 +9,18 @@ const NewProjectModal = lazy(() =>
 const ResizeImageModal = lazy(() =>
   import('./ResizeImageModal').then((m) => ({ default: m.ResizeImageModal }))
 );
+const CanvasSizeModal = lazy(() =>
+  import('./CanvasSizeModal').then((m) => ({ default: m.CanvasSizeModal }))
+);
 const ExportModal = lazy(() => import('./ExportModal').then((m) => ({ default: m.ExportModal })));
 const BatchProcessModal = lazy(() =>
   import('./BatchProcessModal').then((m) => ({ default: m.BatchProcessModal }))
+);
+const FilterGalleryModal = lazy(() =>
+  import('./FilterGalleryModal').then((m) => ({ default: m.FilterGalleryModal }))
+);
+const PerspectiveModal = lazy(() =>
+  import('./PerspectiveModal').then((m) => ({ default: m.PerspectiveModal }))
 );
 const ShortcutsPrivacyModal = lazy(() =>
   import('./ShortcutsPrivacyModal').then((m) => ({ default: m.ShortcutsPrivacyModal }))
@@ -23,8 +32,11 @@ const TextEditModal = lazy(() =>
 const MODALS: Array<{ isOpen: (m: ModalState) => boolean; Component: React.ComponentType }> = [
   { isOpen: (m) => m.newProject, Component: NewProjectModal },
   { isOpen: (m) => m.resizeImage, Component: ResizeImageModal },
+  { isOpen: (m) => m.canvasSize, Component: CanvasSizeModal },
   { isOpen: (m) => m.exportImage, Component: ExportModal },
   { isOpen: (m) => m.batchProcess, Component: BatchProcessModal },
+  { isOpen: (m) => m.filterGallery, Component: FilterGalleryModal },
+  { isOpen: (m) => m.perspective, Component: PerspectiveModal },
   { isOpen: (m) => m.shortcuts || m.privacy, Component: ShortcutsPrivacyModal },
   { isOpen: (m) => m.editingTextLayerId != null, Component: TextEditModal },
 ];

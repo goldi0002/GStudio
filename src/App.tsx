@@ -27,6 +27,8 @@ const TOOL_SHORTCUTS: Record<string, ToolId> = {
   k: 'gradient',
   s: 'clone-stamp',
   j: 'spot-heal',
+  d: 'dodge-burn',
+  r: 'smudge-blur',
   t: 'text',
   u: 'shape',
   i: 'eyedropper',
@@ -63,6 +65,7 @@ function StudioShell() {
     openProjectData,
     addRasterLayer,
     layerViaCopyOrDuplicate,
+    stampVisibleLayers,
     nudgeActiveLayer,
     copyActiveLayer,
     copyMergedToClipboard,
@@ -168,7 +171,11 @@ function StudioShell() {
       }
       if (mod && key === 'e') {
         e.preventDefault();
-        if (activeDocumentId) openModal('exportImage');
+        if (e.shiftKey && e.altKey && view === 'editor' && activeDocumentId) {
+          stampVisibleLayers();
+        } else if (activeDocumentId) {
+          openModal('exportImage');
+        }
         return;
       }
       if (mod && key === '0') {
@@ -262,6 +269,10 @@ function StudioShell() {
           updateToolOptions({ cloneSize: Math.max(2, toolOptions.cloneSize - 4) });
         } else if (activeTool === 'spot-heal') {
           updateToolOptions({ healSize: Math.max(2, toolOptions.healSize - 4) });
+        } else if (activeTool === 'dodge-burn') {
+          updateToolOptions({ dodgeBurnSize: Math.max(2, toolOptions.dodgeBurnSize - 4) });
+        } else if (activeTool === 'smudge-blur') {
+          updateToolOptions({ smudgeBlurSize: Math.max(2, toolOptions.smudgeBlurSize - 4) });
         }
         return;
       }
@@ -274,6 +285,10 @@ function StudioShell() {
           updateToolOptions({ cloneSize: Math.min(200, toolOptions.cloneSize + 4) });
         } else if (activeTool === 'spot-heal') {
           updateToolOptions({ healSize: Math.min(150, toolOptions.healSize + 4) });
+        } else if (activeTool === 'dodge-burn') {
+          updateToolOptions({ dodgeBurnSize: Math.min(200, toolOptions.dodgeBurnSize + 4) });
+        } else if (activeTool === 'smudge-blur') {
+          updateToolOptions({ smudgeBlurSize: Math.min(200, toolOptions.smudgeBlurSize + 4) });
         }
         return;
       }
@@ -305,6 +320,8 @@ function StudioShell() {
     toolOptions.eraserSize,
     toolOptions.cloneSize,
     toolOptions.healSize,
+    toolOptions.dodgeBurnSize,
+    toolOptions.smudgeBlurSize,
     viewportSettings.beforeAfterMode,
     foregroundColor,
     clipboardLayer,
@@ -319,6 +336,7 @@ function StudioShell() {
     setZoom,
     addRasterLayer,
     layerViaCopyOrDuplicate,
+    stampVisibleLayers,
     nudgeActiveLayer,
     copyActiveLayer,
     copyMergedToClipboard,

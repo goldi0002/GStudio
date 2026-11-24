@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, Images, Loader2, Plus, Trash2, X } from 'lucide-react';
-import { DEFAULT_ADJUSTMENTS } from '../../engine/adjustments';
+import { cloneAdjustments, DEFAULT_ADJUSTMENTS } from '../../engine/adjustments';
+import { browserPresetStorage, loadPresets, QUICK_LOOKS } from '../../engine/presets';
 import {
   decodeImageFile,
   encodeDocumentForExport,
@@ -8,7 +9,7 @@ import {
   saveBlobLocally,
 } from '../../persistence/fileAccess';
 import { useEditorStore } from '../../store/useEditorStore';
-import type { DocumentState, ExportFormat, RasterLayer } from '../../types/editor';
+import type { Adjustments, DocumentState, ExportFormat, RasterLayer } from '../../types/editor';
 
 const IMAGE_ACCEPT =
   'image/png,image/jpeg,image/webp,image/avif,image/bmp,image/gif,image/svg+xml';
@@ -88,7 +89,8 @@ function buildBatchDocument(
   canvas: HTMLCanvasElement,
   width: number,
   height: number,
-  sourceFormat: string
+  sourceFormat: string,
+  adjustments: Adjustments
 ): DocumentState {
   const layer: RasterLayer = {
     id: 'batch-layer',
@@ -116,7 +118,7 @@ function buildBatchDocument(
     layers: [layer],
     activeLayerId: layer.id,
     editingTarget: 'layer',
-    adjustments: DEFAULT_ADJUSTMENTS,
+    adjustments,
     selection: null,
     zoom: 1,
     panX: 0,
@@ -178,7 +180,30 @@ export const BatchProcessModal: React.FC = () => {
   const [format, setFormat] = useState<ExportFormat>('jpeg');
   const [quality, setQuality] = useState(88);
   const [edgeMode, setEdgeMode] = useState<EdgeMode>('2048');
+  const [lookId, setLookId] = useState<string>('original');
+  const [namePrefix, setNamePrefix] = useState('');
+  const [nameSuffix, setNameSuffix] = useState('');
   const [running, setRunning] = useState(false);
+
+  const savedPresets = useMemo(
+    () => (open ? loadPresets(browserPresetStorage()) : []),
+    [open]
+  );
+
+  const resolvedAdjustments = useMemo((): Adjustments => {
+    if (lookId.startsWith('quick:')) {
+      const name = lookId.slice(6);
+      const look = QUICK_LOOKS.find((l) => l.name === name);
+      if (look) {
+        return { ...cloneAdjustments(DEFAULT_ADJUSTMENTS), ...look.patch };
+      }
+    } else if (lookId.startsWith('preset:')) {
+      const id = lookId.slice(7);
+      const preset = savedPresets.find((p) => p.id === id);
+      if (preset) return cloneAdjustments(preset.adjustments);
+    }
+    return DEFAULT_ADJUSTMENTS;
+  }, [lookId, savedPresets]);
 
   const filesRef = useRef<Map<string, File>>(new Map());
   const entriesRef = useRef<QueueEntry[]>([]);
@@ -267,7 +292,8 @@ export const BatchProcessModal: React.FC = () => {
           decoded.canvas,
           decoded.width,
           decoded.height,
-          decoded.sourceFormat
+          decoded.sourceFormat,
+          resolvedAdjustments
         );
 
         const { blob, previewUrl } = await encodeDocumentForExport(doc, {
@@ -282,7 +308,9 @@ export const BatchProcessModal: React.FC = () => {
         if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
 
         const ext = EXT_BY_FORMAT[format];
-        const base = safeName(entry.name);
+        const prefixClean = namePrefix ? safeName(namePrefix) : '';
+        const suffixClean = nameSuffix ? safeName(nameSuffix) : '';
+        const base = `${prefixClean}${safeName(entry.name)}${suffixClean}`;
         let filename = `${base}.${ext}`;
         let counter = 2;
         while (usedNames.has(filename.toLowerCase())) {
@@ -414,6 +442,60 @@ export const BatchProcessModal: React.FC = () => {
                 </option>
               ))}
             </select>
+          </div>
+
+          <div className="space-y-1.5 sm:col-span-2">
+            <span className="text-[11px] text-[var(--lp-text-secondary)] block">
+              Color Look / Saved Preset
+            </span>
+            <select
+              value={lookId}
+              onChange={(e) => setLookId(e.target.value)}
+              className="w-full h-7 rounded border bg-[var(--lp-bg)] px-1.5 text-[11px] cursor-pointer"
+              style={{ borderColor: 'var(--lp-border)' }}
+            >
+              <option value="original">None (Keep Original Color)</option>
+              <optgroup label="Quick Looks">
+                {QUICK_LOOKS.map((look) => (
+                  <option key={look.name} value={`quick:${look.name}`}>
+                    {look.name}
+                  </option>
+                ))}
+              </optgroup>
+              {savedPresets.length > 0 && (
+                <optgroup label="My Saved Presets">
+                  {savedPresets.map((preset) => (
+                    <option key={preset.id} value={`preset:${preset.id}`}>
+                      {preset.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          </div>
+
+          <div className="space-y-1.5">
+            <span className="text-[11px] text-[var(--lp-text-secondary)] block">
+              Filename Prefix / Suffix
+            </span>
+            <div className="grid grid-cols-2 gap-1.5">
+              <input
+                type="text"
+                placeholder="Prefix"
+                value={namePrefix}
+                onChange={(e) => setNamePrefix(e.target.value)}
+                className="w-full h-7 px-2 rounded border bg-[var(--lp-bg)] text-[11px] outline-none focus:border-[#0A84FF]"
+                style={{ borderColor: 'var(--lp-border)' }}
+              />
+              <input
+                type="text"
+                placeholder="Suffix"
+                value={nameSuffix}
+                onChange={(e) => setNameSuffix(e.target.value)}
+                className="w-full h-7 px-2 rounded border bg-[var(--lp-bg)] text-[11px] outline-none focus:border-[#0A84FF]"
+                style={{ borderColor: 'var(--lp-border)' }}
+              />
+            </div>
           </div>
         </div>
 

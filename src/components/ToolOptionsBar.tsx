@@ -18,9 +18,10 @@ import {
   X,
 } from 'lucide-react';
 import { cropRatioFor, fitRatioRect, parseRatio } from '../engine/cropRatio';
+import { FONT_PRESETS } from '../engine/presets';
 import { decodeImageFile, pickLocalFiles } from '../persistence/fileAccess';
 import { useEditorStore } from '../store/useEditorStore';
-import type { ShapeKind } from '../types/editor';
+import type { BrushSymmetryMode, ShapeKind } from '../types/editor';
 
 export const ToolOptionsBar: React.FC = () => {
   const {
@@ -30,8 +31,10 @@ export const ToolOptionsBar: React.FC = () => {
     documents,
     activeDocumentId,
     cropRect,
+    cropStraighten,
     cloneSource,
     setCropRect,
+    setCropStraighten,
     applyCrop,
     cancelCrop,
     selectAll,
@@ -42,6 +45,7 @@ export const ToolOptionsBar: React.FC = () => {
     resizeActiveSelection,
     applySelectionAsMask,
     fillSelectionWithColor,
+    strokeSelectionWithColor,
     layerViaCopyOrDuplicate,
     alignActiveLayer,
     flipActiveLayer,
@@ -61,6 +65,7 @@ export const ToolOptionsBar: React.FC = () => {
 
   const [featherRadius, setFeatherRadius] = useState(6);
   const [resizePx, setResizePx] = useState(4);
+  const [strokePx, setStrokePx] = useState(2);
 
   const doc = documents.find((d) => d.id === activeDocumentId);
   if (!doc) return null;
@@ -366,6 +371,30 @@ export const ToolOptionsBar: React.FC = () => {
                 >
                   Fill FG
                 </button>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min={1}
+                    max={48}
+                    value={strokePx}
+                    onChange={(e) =>
+                      setStrokePx(Math.max(1, Math.min(48, Number(e.target.value) || 1)))
+                    }
+                    aria-label="Selection stroke width in pixels"
+                    title="Selection stroke width in pixels"
+                    className="w-11 px-1 py-0.5 rounded border bg-transparent font-mono-tabular text-[11px]"
+                    style={{ borderColor: 'var(--lp-border)' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => strokeSelectionWithColor(foregroundColor, strokePx, 100)}
+                    title="Stroke Selection Border with Foreground Color"
+                    className="px-2 py-0.5 rounded border text-[11px] hover:bg-[var(--lp-hover)] cursor-pointer whitespace-nowrap"
+                    style={{ borderColor: 'var(--lp-border)' }}
+                  >
+                    Stroke FG
+                  </button>
+                </div>
                 <button
                   type="button"
                   onClick={invertActiveSelection}
@@ -501,6 +530,32 @@ export const ToolOptionsBar: React.FC = () => {
                 <CaretsToAxisDashedHorizontal className="w-3.5 h-3.5" />
               </button>
             </div>
+            <div className="h-4 w-px bg-[var(--lp-border)]" />
+            <label className="flex items-center gap-1.5 text-[11px]">
+              <span className="text-[var(--lp-text-secondary)]">Straighten</span>
+              <input
+                type="range"
+                min={-45}
+                max={45}
+                step={0.5}
+                aria-label="Straighten angle"
+                value={cropStraighten}
+                onChange={(e) => setCropStraighten(Number(e.target.value))}
+                className="lp-slider w-20"
+              />
+              <span className="font-mono-tabular w-11 text-right">
+                {cropStraighten > 0 ? `+${cropStraighten.toFixed(1)}` : cropStraighten.toFixed(1)}°
+              </span>
+              {cropStraighten !== 0 && (
+                <button
+                  type="button"
+                  onClick={() => setCropStraighten(0)}
+                  className="text-[10px] text-[#0A84FF] hover:underline cursor-pointer"
+                >
+                  0°
+                </button>
+              )}
+            </label>
             {cropRect && (
               <>
                 <div className="h-4 w-px bg-[var(--lp-border)]" />
@@ -532,6 +587,50 @@ export const ToolOptionsBar: React.FC = () => {
         {activeTool === 'brush' && (
           <>
             <span className="text-[11px] font-medium text-[var(--lp-text-secondary)]">Brush</span>
+            <div className="h-4 w-px bg-[var(--lp-border)]" />
+            <div className="flex items-center gap-1">
+              {(
+                [
+                  ['normal', 'Normal'],
+                  ['color-replace', 'Color'],
+                ] as const
+              ).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  title={
+                    mode === 'color-replace'
+                      ? 'Replace hue & saturation while preserving luminance'
+                      : 'Standard paint brush'
+                  }
+                  onClick={() => updateToolOptions({ brushMode: mode })}
+                  className={`px-2 py-0.5 rounded text-[11px] cursor-pointer whitespace-nowrap transition-colors ${
+                    toolOptions.brushMode === mode
+                      ? 'bg-[#0A84FF] text-white'
+                      : 'hover:bg-[var(--lp-hover)] text-[var(--lp-text-secondary)]'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <label className="flex items-center gap-1.5 text-[11px]">
+              <span className="text-[var(--lp-text-secondary)]">Sym</span>
+              <select
+                aria-label="Brush symmetry mode"
+                value={toolOptions.brushSymmetry}
+                onChange={(e) =>
+                  updateToolOptions({ brushSymmetry: e.target.value as BrushSymmetryMode })
+                }
+                className="px-1.5 py-0.5 rounded border text-[11px] bg-[var(--lp-panel)]"
+                style={{ borderColor: 'var(--lp-border)' }}
+              >
+                <option value="off">Off</option>
+                <option value="vertical">Vertical</option>
+                <option value="horizontal">Horizontal</option>
+                <option value="quad">Quad</option>
+              </select>
+            </label>
             <div className="h-4 w-px bg-[var(--lp-border)]" />
             <label className="flex items-center gap-2 text-[11px]">
               <span className="text-[var(--lp-text-secondary)]">Size</span>
@@ -582,6 +681,24 @@ export const ToolOptionsBar: React.FC = () => {
         {activeTool === 'eraser' && (
           <>
             <span className="text-[11px] font-medium text-[var(--lp-text-secondary)]">Eraser</span>
+            <div className="h-4 w-px bg-[var(--lp-border)]" />
+            <label className="flex items-center gap-1.5 text-[11px]">
+              <span className="text-[var(--lp-text-secondary)]">Sym</span>
+              <select
+                aria-label="Eraser symmetry mode"
+                value={toolOptions.brushSymmetry}
+                onChange={(e) =>
+                  updateToolOptions({ brushSymmetry: e.target.value as BrushSymmetryMode })
+                }
+                className="px-1.5 py-0.5 rounded border text-[11px] bg-[var(--lp-panel)]"
+                style={{ borderColor: 'var(--lp-border)' }}
+              >
+                <option value="off">Off</option>
+                <option value="vertical">Vertical</option>
+                <option value="horizontal">Horizontal</option>
+                <option value="quad">Quad</option>
+              </select>
+            </label>
             <div className="h-4 w-px bg-[var(--lp-border)]" />
             <label className="flex items-center gap-2 text-[11px]">
               <span className="text-[var(--lp-text-secondary)]">Size</span>
@@ -775,6 +892,28 @@ export const ToolOptionsBar: React.FC = () => {
               Spot Healing
             </span>
             <div className="h-4 w-px bg-[var(--lp-border)]" />
+            <div className="flex items-center gap-1">
+              {(
+                [
+                  ['heal', 'Heal'],
+                  ['red-eye', 'Red-Eye'],
+                ] as const
+              ).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => updateToolOptions({ spotHealMode: mode })}
+                  className={`px-2 py-0.5 rounded text-[11px] cursor-pointer whitespace-nowrap transition-colors ${
+                    toolOptions.spotHealMode === mode
+                      ? 'bg-[#0A84FF] text-white'
+                      : 'hover:bg-[var(--lp-hover)] text-[var(--lp-text-secondary)]'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="h-4 w-px bg-[var(--lp-border)]" />
             <label className="flex items-center gap-2 text-[11px]">
               <span className="text-[var(--lp-text-secondary)]">Size</span>
               <input
@@ -800,8 +939,162 @@ export const ToolOptionsBar: React.FC = () => {
               <span className="font-mono-tabular w-8">{toolOptions.healHardness}%</span>
             </label>
             <span className="text-[11px] text-[var(--lp-text-secondary)] whitespace-nowrap">
-              Click or drag over blemishes to blend from surrounding pixels
+              {toolOptions.spotHealMode === 'red-eye'
+                ? 'Click or brush over flash red-eye pupils to neutralize while preserving catchlights'
+                : 'Click or drag over blemishes to blend from surrounding pixels'}
             </span>
+          </>
+        )}
+
+        {activeTool === 'dodge-burn' && (
+          <>
+            <span className="text-[11px] font-medium text-[var(--lp-text-secondary)] whitespace-nowrap">
+              Tone Brush
+            </span>
+            <div className="h-4 w-px bg-[var(--lp-border)]" />
+            <div className="flex items-center gap-1">
+              {(
+                [
+                  ['dodge', 'Dodge'],
+                  ['burn', 'Burn'],
+                  ['saturate', 'Saturate'],
+                  ['desaturate', 'Desaturate'],
+                ] as const
+              ).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => updateToolOptions({ dodgeBurnMode: mode })}
+                  className={`px-2 py-0.5 rounded text-[11px] cursor-pointer whitespace-nowrap transition-colors ${
+                    toolOptions.dodgeBurnMode === mode
+                      ? 'bg-[#0A84FF] text-white'
+                      : 'hover:bg-[var(--lp-hover)] text-[var(--lp-text-secondary)]'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="h-4 w-px bg-[var(--lp-border)]" />
+            <select
+              aria-label="Tonal range"
+              value={toolOptions.dodgeBurnRange}
+              onChange={(e) =>
+                updateToolOptions({
+                  dodgeBurnRange: e.target.value as 'shadows' | 'midtones' | 'highlights',
+                })
+              }
+              className="px-1.5 py-0.5 rounded border text-[11px] bg-[var(--lp-panel)]"
+              style={{ borderColor: 'var(--lp-border)' }}
+            >
+              <option value="shadows">Shadows</option>
+              <option value="midtones">Midtones</option>
+              <option value="highlights">Highlights</option>
+            </select>
+            <label className="flex items-center gap-2 text-[11px]">
+              <span className="text-[var(--lp-text-secondary)]">Size</span>
+              <input
+                type="range"
+                min={2}
+                max={200}
+                value={toolOptions.dodgeBurnSize}
+                onChange={(e) => updateToolOptions({ dodgeBurnSize: Number(e.target.value) })}
+                className="lp-slider w-20"
+              />
+              <span className="font-mono-tabular w-9">{toolOptions.dodgeBurnSize}px</span>
+            </label>
+            <label className="flex items-center gap-2 text-[11px]">
+              <span className="text-[var(--lp-text-secondary)]">Hardness</span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={toolOptions.dodgeBurnHardness}
+                onChange={(e) => updateToolOptions({ dodgeBurnHardness: Number(e.target.value) })}
+                className="lp-slider w-16"
+              />
+              <span className="font-mono-tabular w-8">{toolOptions.dodgeBurnHardness}%</span>
+            </label>
+            <label className="flex items-center gap-2 text-[11px]">
+              <span className="text-[var(--lp-text-secondary)]">Strength</span>
+              <input
+                type="range"
+                min={1}
+                max={100}
+                value={toolOptions.dodgeBurnStrength}
+                onChange={(e) => updateToolOptions({ dodgeBurnStrength: Number(e.target.value) })}
+                className="lp-slider w-16"
+              />
+              <span className="font-mono-tabular w-8">{toolOptions.dodgeBurnStrength}%</span>
+            </label>
+          </>
+        )}
+
+        {activeTool === 'smudge-blur' && (
+          <>
+            <span className="text-[11px] font-medium text-[var(--lp-text-secondary)] whitespace-nowrap">
+              Detail Brush
+            </span>
+            <div className="h-4 w-px bg-[var(--lp-border)]" />
+            <div className="flex items-center gap-1">
+              {(
+                [
+                  ['smudge', 'Smudge'],
+                  ['blur', 'Blur'],
+                  ['sharpen', 'Sharpen'],
+                ] as const
+              ).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => updateToolOptions({ smudgeBlurMode: mode })}
+                  className={`px-2 py-0.5 rounded text-[11px] cursor-pointer whitespace-nowrap transition-colors ${
+                    toolOptions.smudgeBlurMode === mode
+                      ? 'bg-[#0A84FF] text-white'
+                      : 'hover:bg-[var(--lp-hover)] text-[var(--lp-text-secondary)]'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="h-4 w-px bg-[var(--lp-border)]" />
+            <label className="flex items-center gap-2 text-[11px]">
+              <span className="text-[var(--lp-text-secondary)]">Size</span>
+              <input
+                type="range"
+                min={2}
+                max={200}
+                value={toolOptions.smudgeBlurSize}
+                onChange={(e) => updateToolOptions({ smudgeBlurSize: Number(e.target.value) })}
+                className="lp-slider w-20"
+              />
+              <span className="font-mono-tabular w-9">{toolOptions.smudgeBlurSize}px</span>
+            </label>
+            <label className="flex items-center gap-2 text-[11px]">
+              <span className="text-[var(--lp-text-secondary)]">Hardness</span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={toolOptions.smudgeBlurHardness}
+                onChange={(e) => updateToolOptions({ smudgeBlurHardness: Number(e.target.value) })}
+                className="lp-slider w-16"
+              />
+              <span className="font-mono-tabular w-8">{toolOptions.smudgeBlurHardness}%</span>
+            </label>
+            <label className="flex items-center gap-2 text-[11px]">
+              <span className="text-[var(--lp-text-secondary)]">Strength</span>
+              <input
+                type="range"
+                min={1}
+                max={100}
+                value={toolOptions.smudgeBlurStrength}
+                onChange={(e) => updateToolOptions({ smudgeBlurStrength: Number(e.target.value) })}
+                className="lp-slider w-16"
+              />
+              <span className="font-mono-tabular w-8">{toolOptions.smudgeBlurStrength}%</span>
+            </label>
           </>
         )}
 
@@ -809,6 +1102,22 @@ export const ToolOptionsBar: React.FC = () => {
           <>
             <span className="text-[11px] font-medium text-[var(--lp-text-secondary)]">Text</span>
             <div className="h-4 w-px bg-[var(--lp-border)]" />
+            <select
+              aria-label="Text font family"
+              value={toolOptions.textFontFamily}
+              onChange={(e) => updateToolOptions({ textFontFamily: e.target.value })}
+              className="px-1.5 py-0.5 rounded border text-[11px] bg-[var(--lp-panel)] max-w-[130px]"
+              style={{ borderColor: 'var(--lp-border)' }}
+            >
+              {FONT_PRESETS.map((f) => (
+                <option key={f.label} value={f.value}>
+                  {f.label}
+                </option>
+              ))}
+              {!FONT_PRESETS.some((f) => f.value === toolOptions.textFontFamily) && (
+                <option value={toolOptions.textFontFamily}>Custom Font</option>
+              )}
+            </select>
             <label className="flex items-center gap-1.5 text-[11px]">
               <span className="text-[var(--lp-text-secondary)]">Size</span>
               <input
@@ -824,6 +1133,7 @@ export const ToolOptionsBar: React.FC = () => {
               />
             </label>
             <select
+              aria-label="Text font weight"
               value={toolOptions.textFontWeight}
               onChange={(e) =>
                 updateToolOptions({
@@ -838,6 +1148,42 @@ export const ToolOptionsBar: React.FC = () => {
               <option value="600">Semibold</option>
               <option value="700">Bold</option>
             </select>
+            <button
+              type="button"
+              onClick={() =>
+                updateToolOptions({
+                  textFontStyle: toolOptions.textFontStyle === 'italic' ? 'normal' : 'italic',
+                })
+              }
+              title="Toggle Italic"
+              className={`px-2 py-0.5 rounded border text-[11px] italic font-serif cursor-pointer transition-colors ${
+                toolOptions.textFontStyle === 'italic'
+                  ? 'bg-[#0A84FF] text-white border-[#0A84FF]'
+                  : 'hover:bg-[var(--lp-hover)] text-[var(--lp-text-secondary)]'
+              }`}
+              style={{
+                borderColor: toolOptions.textFontStyle === 'italic' ? '#0A84FF' : 'var(--lp-border)',
+              }}
+            >
+              I
+            </button>
+            <label className="flex items-center gap-1 text-[11px]">
+              <span className="text-[var(--lp-text-secondary)]">Leading</span>
+              <input
+                type="number"
+                min={0.8}
+                max={3}
+                step={0.05}
+                value={toolOptions.textLineHeight}
+                onChange={(e) =>
+                  updateToolOptions({
+                    textLineHeight: Math.max(0.8, Math.min(3, Number(e.target.value) || 1.25)),
+                  })
+                }
+                className="w-13 px-1.5 py-0.5 rounded border bg-transparent font-mono-tabular text-[11px]"
+                style={{ borderColor: 'var(--lp-border)' }}
+              />
+            </label>
             <div className="flex items-center gap-0.5">
               {(
                 [
@@ -860,7 +1206,7 @@ export const ToolOptionsBar: React.FC = () => {
                 </button>
               ))}
             </div>
-            <span className="text-[11px] text-[var(--lp-text-secondary)]">
+            <span className="text-[11px] text-[var(--lp-text-secondary)] whitespace-nowrap">
               Click canvas to place text
             </span>
           </>
@@ -871,6 +1217,7 @@ export const ToolOptionsBar: React.FC = () => {
             <span className="text-[11px] font-medium text-[var(--lp-text-secondary)]">Shape</span>
             <div className="h-4 w-px bg-[var(--lp-border)]" />
             <select
+              aria-label="Shape kind"
               value={toolOptions.shapeKind}
               onChange={(e) => updateToolOptions({ shapeKind: e.target.value as ShapeKind })}
               className="px-2 py-0.5 rounded border text-[11px] bg-[var(--lp-panel)]"
@@ -879,8 +1226,49 @@ export const ToolOptionsBar: React.FC = () => {
               <option value="rounded-rect">Rounded Rect</option>
               <option value="rect">Rectangle</option>
               <option value="ellipse">Ellipse</option>
+              <option value="polygon">Polygon</option>
+              <option value="star">Star</option>
+              <option value="arrow">Arrow</option>
               <option value="line">Line</option>
             </select>
+            {(toolOptions.shapeKind === 'polygon' || toolOptions.shapeKind === 'star') && (
+              <label className="flex items-center gap-1 text-[11px]">
+                <span className="text-[var(--lp-text-secondary)]">
+                  {toolOptions.shapeKind === 'star' ? 'Points' : 'Sides'}
+                </span>
+                <input
+                  type="number"
+                  min={3}
+                  max={16}
+                  value={toolOptions.shapeSides}
+                  onChange={(e) =>
+                    updateToolOptions({
+                      shapeSides: Math.max(3, Math.min(16, Math.round(Number(e.target.value) || 5))),
+                    })
+                  }
+                  className="w-11 px-1 py-0.5 rounded border bg-transparent font-mono-tabular text-[11px]"
+                  style={{ borderColor: 'var(--lp-border)' }}
+                />
+              </label>
+            )}
+            {toolOptions.shapeKind === 'rounded-rect' && (
+              <label className="flex items-center gap-1 text-[11px]">
+                <span className="text-[var(--lp-text-secondary)]">Radius</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={120}
+                  value={toolOptions.shapeCornerRadius}
+                  onChange={(e) =>
+                    updateToolOptions({
+                      shapeCornerRadius: Math.max(0, Math.min(120, Number(e.target.value) || 0)),
+                    })
+                  }
+                  className="w-12 px-1 py-0.5 rounded border bg-transparent font-mono-tabular text-[11px]"
+                  style={{ borderColor: 'var(--lp-border)' }}
+                />
+              </label>
+            )}
             <label className="flex items-center gap-1.5 text-[11px] cursor-pointer">
               <input
                 type="checkbox"
@@ -909,16 +1297,58 @@ export const ToolOptionsBar: React.FC = () => {
                 className="w-5 h-5 rounded border-0 bg-transparent cursor-pointer"
               />
             </label>
-            <span className="text-[11px] text-[var(--lp-text-secondary)]">
+            {(toolOptions.shapeStrokeEnabled || toolOptions.shapeKind === 'line') && (
+              <label className="flex items-center gap-1 text-[11px]">
+                <span className="text-[var(--lp-text-secondary)]">Width</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={64}
+                  value={toolOptions.shapeStrokeWidth}
+                  onChange={(e) =>
+                    updateToolOptions({
+                      shapeStrokeWidth: Math.max(1, Math.min(64, Number(e.target.value) || 1)),
+                    })
+                  }
+                  className="w-11 px-1 py-0.5 rounded border bg-transparent font-mono-tabular text-[11px]"
+                  style={{ borderColor: 'var(--lp-border)' }}
+                />
+              </label>
+            )}
+            <span className="text-[11px] text-[var(--lp-text-secondary)] whitespace-nowrap">
               Drag on canvas to draw
             </span>
           </>
         )}
 
         {activeTool === 'eyedropper' && (
-          <span className="text-[11px] text-[var(--lp-text-secondary)]">
-            Eyedropper · Click anywhere on canvas to sample pixel color into Foreground
-          </span>
+          <>
+            <span className="text-[11px] font-medium text-[var(--lp-text-secondary)]">
+              Eyedropper
+            </span>
+            <div className="h-4 w-px bg-[var(--lp-border)]" />
+            <label className="flex items-center gap-1.5 text-[11px]">
+              <span className="text-[var(--lp-text-secondary)]">Sample</span>
+              <select
+                aria-label="Eyedropper sample size"
+                value={toolOptions.eyedropperSampleSize}
+                onChange={(e) =>
+                  updateToolOptions({
+                    eyedropperSampleSize: Number(e.target.value) as 1 | 3 | 5,
+                  })
+                }
+                className="px-1.5 py-0.5 rounded border text-[11px] bg-[var(--lp-panel)] font-mono-tabular"
+                style={{ borderColor: 'var(--lp-border)' }}
+              >
+                <option value={1}>1×1 Point</option>
+                <option value={3}>3×3 Average</option>
+                <option value={5}>5×5 Average</option>
+              </select>
+            </label>
+            <span className="text-[11px] text-[var(--lp-text-secondary)] whitespace-nowrap">
+              Click anywhere on canvas to sample color into Foreground
+            </span>
+          </>
         )}
 
         {activeTool === 'hand' && (

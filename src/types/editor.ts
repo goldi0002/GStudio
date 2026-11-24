@@ -11,6 +11,8 @@ export type ToolId =
   | 'gradient'
   | 'clone-stamp'
   | 'spot-heal'
+  | 'dodge-burn'
+  | 'smudge-blur'
   | 'text'
   | 'shape'
   | 'eyedropper'
@@ -31,7 +33,16 @@ export type BlendMode =
   | 'difference'
   | 'exclusion';
 
-export type ShapeKind = 'rect' | 'rounded-rect' | 'ellipse' | 'line';
+export type ShapeKind =
+  | 'rect'
+  | 'rounded-rect'
+  | 'ellipse'
+  | 'line'
+  | 'polygon'
+  | 'star'
+  | 'arrow';
+
+export type CanvasAnchor = 'nw' | 'n' | 'ne' | 'w' | 'c' | 'e' | 'sw' | 's' | 'se';
 
 export type LayerType = 'raster' | 'text' | 'shape' | 'group' | 'adjustment';
 
@@ -147,6 +158,8 @@ export interface ShapeLayer extends BaseLayer {
   strokeEnabled: boolean;
   strokeWidth: number;
   cornerRadius: number;
+  /** Vertex / point count for polygon and star shapes (3..16). Optional for older saves. */
+  sides?: number;
 }
 
 export interface GroupLayer extends BaseLayer {
@@ -195,24 +208,87 @@ export interface FiltersConfig {
   pixelate: number; // 1..48 px (1 = off)
   /** Edge-preserving noise reduction, 0..100. Optional: older saved projects omit it. */
   denoise?: number;
+  /** Highlight halation / bloom glow, 0..100. Optional: older saved projects omit it. */
+  bloom?: number;
+  /** Tonal posterization levels, 0 (off) or 2..24. Optional: older saved projects omit it. */
+  posterize?: number;
+  /** Radial RGB channel fringe / chromatic aberration, 0..100. Optional for older saves. */
+  chromaticAberration?: number;
+  /** Binary black/white threshold luminance cutoff, 0 (off) or 1..255. Optional for older saves. */
+  threshold?: number;
+  /** Optical barrel/pincushion lens distortion, -100..100. Optional for older saves. */
+  lensDistortion?: number;
+  /** Miniature / shallow depth-of-field tilt-shift blur radius, 0..35 px. Optional for older saves. */
+  tiltShiftBlur?: number;
+  /** Vertical focus center for tilt-shift blur, 10..90 %. Optional for older saves. */
+  tiltShiftPos?: number;
+  /** Sharp focus band width for tilt-shift blur, 5..60 %. Optional for older saves. */
+  tiltShiftBand?: number;
 }
+
+export type HslBandId =
+  | 'red'
+  | 'orange'
+  | 'yellow'
+  | 'green'
+  | 'aqua'
+  | 'blue'
+  | 'purple'
+  | 'magenta';
+
+export interface HslBandAdjust {
+  h: number; // -100..100
+  s: number; // -100..100
+  l: number; // -100..100
+}
+
+export type HslMixerConfig = Record<HslBandId, HslBandAdjust>;
+
+export interface GradientMapConfig {
+  enabled: boolean;
+  shadowColor: string;
+  highlightColor: string;
+  mix: number; // 0..100
+}
+
+export type FilterGalleryKind =
+  | 'high-pass'
+  | 'motion-blur'
+  | 'oil-paint'
+  | 'halftone'
+  | 'emboss'
+  | 'edge-detect';
+
+export type BrushSymmetryMode = 'off' | 'vertical' | 'horizontal' | 'quad';
 
 export interface Adjustments {
   brightness: number; // -100..100
   contrast: number; // -100..100
   exposure: number; // -2.0..2.0
   saturation: number; // -100..100
+  vibrance?: number; // -100..100
+  clarity?: number; // -100..100
+  fade?: number; // 0..100
   hue: number; // -180..180
   temperature: number; // -100..100
   tint: number; // -100..100
   highlights: number; // -100..100
   shadows: number; // -100..100
   sharpness: number; // 0..100
+  /** Split-tone strength 0..100. Optional for older saves. */
+  splitTone?: number;
+  /** Split-tone shadow hue 0..360. Optional for older saves. */
+  splitShadowHue?: number;
+  /** Split-tone highlight hue 0..360. Optional for older saves. */
+  splitHighlightHue?: number;
   grayscale: boolean;
   sepia: boolean;
+  invert?: boolean;
   levels?: LevelsConfig;
   curves?: CurvesConfig;
   filters?: FiltersConfig;
+  hsl?: HslMixerConfig;
+  gradientMap?: GradientMapConfig;
 }
 
 export interface SelectionPoint {
@@ -299,6 +375,8 @@ export interface ToolOptions {
   brushSize: number;
   brushHardness: number; // 0..100
   brushOpacity: number; // 1..100
+  brushMode: 'normal' | 'color-replace';
+  brushSymmetry: BrushSymmetryMode;
   eraserSize: number;
   eraserHardness: number;
   eraserOpacity: number;
@@ -316,6 +394,17 @@ export interface ToolOptions {
   cloneSampleAllLayers: boolean;
   healSize: number;
   healHardness: number; // 0..100
+  spotHealMode: 'heal' | 'red-eye';
+  dodgeBurnMode: 'dodge' | 'burn' | 'saturate' | 'desaturate';
+  dodgeBurnRange: 'shadows' | 'midtones' | 'highlights';
+  dodgeBurnSize: number;
+  dodgeBurnHardness: number; // 0..100
+  dodgeBurnStrength: number; // 1..100
+  smudgeBlurMode: 'smudge' | 'blur' | 'sharpen';
+  smudgeBlurSize: number;
+  smudgeBlurHardness: number; // 0..100
+  smudgeBlurStrength: number; // 1..100
+  eyedropperSampleSize: 1 | 3 | 5;
   snapToGuides: boolean;
   moveAutoSelect: boolean;
   cropAspect: 'free' | '1:1' | '4:3' | '16:9' | '3:2' | '4:5' | 'custom';
@@ -328,10 +417,13 @@ export interface ToolOptions {
   shapeStrokeEnabled: boolean;
   shapeStrokeWidth: number;
   shapeCornerRadius: number;
+  shapeSides: number;
   textFontFamily: string;
   textFontSize: number;
   textFontWeight: '400' | '500' | '600' | '700';
+  textFontStyle: 'normal' | 'italic';
   textAlign: 'left' | 'center' | 'right';
+  textLineHeight: number;
 }
 
 export interface RecentProjectMeta {

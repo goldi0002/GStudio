@@ -2,21 +2,33 @@ import { create } from 'zustand';
 import {
   cloneAdjustments,
   cloneDefaultAdjustments,
+  createDefaultHslMixer,
   DEFAULT_ADJUSTMENTS,
   DEFAULT_CURVES,
   DEFAULT_FILTERS,
+  DEFAULT_GRADIENT_MAP,
   DEFAULT_LEVELS,
   getTargetAdjustments,
   withTargetAdjustments,
 } from '../engine/adjustments';
 import {
+  applyGalleryFilterBuffer,
+  autoContrastBuffer,
+  autoLevelsBuffer,
+  type GalleryFilterParams,
+} from '../engine/filters';
+import {
+  applyPixelFilterToCanvas,
   applySelectionClipToContext,
+  canvasSizeLayers,
   cloneCanvas,
   cloneLayerEffects,
   compositeLayersToCanvas,
   computeAutoEnhanceAdjustments,
+  computeTrimTransparentBounds,
   createCanvas,
   createWhiteMaskCanvas,
+  cropAndStraightenLayers,
   cropLayers,
   DEFAULT_COLOR_OVERLAY,
   DEFAULT_DROP_SHADOW,
@@ -33,11 +45,14 @@ import {
   maskCanvasDiffBySelection,
   measureTextLayerDimensions,
   rasterizeSelectionToMaskBuffer,
+  rasterizeVectorLayer,
   renderLayerNodeToContext,
   resizeLayers,
   restoreLayersFromSnapshot,
   rotateLayers,
   snapshotLayers,
+  strokeCanvasWithSelectionMask,
+  warpCanvasPerspective,
   writeMaskBufferToMaskCanvas,
 } from '../engine/canvasOps';
 import { SAMPLE_PRESETS } from '../engine/sampleImages';
@@ -57,16 +72,21 @@ import {
 } from '../persistence/indexedDb';
 import type {
   Adjustments,
+  CanvasAnchor,
   ColorOverlayEffect,
   CropRect,
   CurvePoint,
   CurvesConfig,
   DocumentState,
   DropShadowEffect,
+  FilterGalleryKind,
   FiltersConfig,
+  GradientMapConfig,
   AdjustmentLayer,
   GroupLayer,
   HistoryEntry,
+  HslBandAdjust,
+  HslBandId,
   InnerGlowEffect,
   InnerShadowEffect,
   Layer,
@@ -129,6 +149,7 @@ function createHistoryEntry(
 }
 
 export interface InspectorPanelsState {
+  histogram: boolean;
   layers: boolean;
   properties: boolean;
   adjustments: boolean;
@@ -150,8 +171,11 @@ export interface ViewportSettings {
 export interface ModalStates {
   newProject: boolean;
   resizeImage: boolean;
+  canvasSize: boolean;
   exportImage: boolean;
   batchProcess: boolean;
+  filterGallery: boolean;
+  perspective: boolean;
   shortcuts: boolean;
   privacy: boolean;
   editingTextLayerId: string | null;
@@ -169,8 +193,10 @@ interface EditorStoreState {
   backgroundColor: string;
   recentSwatches: string[];
   cropRect: CropRect | null;
+  cropStraighten: number;
   cloneSource: { x: number; y: number } | null;
   fitTrigger: number;
+  liveCanvasTick: number;
   cursorCanvasPos: { x: number; y: number } | null;
   viewportSettings: ViewportSettings;
   inspectorOpen: InspectorPanelsState;
@@ -178,8 +204,10 @@ interface EditorStoreState {
   recentProjects: RecentProjectMeta[];
   saveStatus: 'idle' | 'saving' | 'saved';
   clipboardLayer: Layer | null;
+  clipboardEffects: LayerEffects | null;
   preferInternalClipboard: boolean;
   modals: ModalStates;
+  filterGalleryKind: FilterGalleryKind;
   toast: { id: number; message: string; kind: 'info' | 'success' | 'error' } | null;
 
   initializeApp: () => Promise<void>;
@@ -207,6 +235,7 @@ interface EditorStoreState {
   setBackgroundColor: (hex: string) => void;
   swapColors: () => void;
   setCursorCanvasPos: (pos: { x: number; y: number } | null) => void;
+  bumpLiveCanvasTick: () => void;
 
   setZoom: (zoom: number, panX?: number, panY?: number) => void;
   setPan: (panX: number, panY: number) => void;
@@ -217,6 +246,7 @@ interface EditorStoreState {
   setSplitPosition: (pos: number) => void;
 
   setCropRect: (rect: CropRect | null) => void;
+  setCropStraighten: (angle: number) => void;
   setCloneSource: (pos: { x: number; y: number } | null) => void;
   applyCrop: () => void;
   cancelCrop: () => void;
@@ -232,6 +262,7 @@ interface EditorStoreState {
   resizeActiveSelection: (deltaPx: number) => void;
   applySelectionAsMask: (mode?: 'reveal' | 'hide') => void;
   fillSelectionWithColor: (colorHex: string, opacityPercent?: number) => void;
+  strokeSelectionWithColor: (colorHex: string, widthPx?: number, opacityPercent?: number) => void;
 
   selectLayer: (layerId: string) => void;
   setEditingTarget: (target: 'layer' | 'mask') => void;
@@ -260,6 +291,8 @@ interface EditorStoreState {
     },
     commitLabel?: string
   ) => void;
+  copyActiveLayerEffects: () => void;
+  pasteActiveLayerEffects: () => void;
   flipActiveLayer: (direction: 'horizontal' | 'vertical') => void;
   nudgeActiveLayer: (dx: number, dy: number) => void;
   deleteLayer: (layerId: string) => void;
@@ -268,6 +301,8 @@ interface EditorStoreState {
   reorderLayers: (fromIndex: number, toIndex: number) => void;
   moveLayerOrder: (layerId: string, direction: 'up' | 'down') => void;
   mergeLayerDown: (layerId: string) => void;
+  stampVisibleLayers: () => void;
+  rasterizeActiveLayer: () => void;
   flattenDocument: () => void;
   alignActiveLayer: (
     alignment: 'left' | 'center-h' | 'right' | 'top' | 'center-v' | 'bottom'
@@ -281,6 +316,13 @@ interface EditorStoreState {
   setPreferInternalClipboard: (value: boolean) => void;
 
   resizeActiveDocument: (newWidth: number, newHeight: number) => void;
+  canvasSizeActiveDocument: (
+    newWidth: number,
+    newHeight: number,
+    anchor: CanvasAnchor,
+    extensionColor?: string
+  ) => void;
+  trimTransparentPixels: () => void;
   rotateActiveDocument: (degrees: 90 | -90 | 180) => void;
   flipActiveDocument: (direction: 'horizontal' | 'vertical') => void;
 
@@ -288,6 +330,17 @@ interface EditorStoreState {
   updateLevels: (patch: Partial<LevelsConfig>, commitLabel?: string) => void;
   updateCurves: (channel: keyof CurvesConfig, points: CurvePoint[], commitLabel?: string) => void;
   updateFilters: (patch: Partial<FiltersConfig>, commitLabel?: string) => void;
+  updateHslBand: (
+    band: HslBandId,
+    patch: Partial<HslBandAdjust>,
+    commitLabel?: string
+  ) => void;
+  resetHslMixer: () => void;
+  updateGradientMap: (patch: Partial<GradientMapConfig>, commitLabel?: string) => void;
+  applyAutoLevelsToLayer: () => void;
+  applyAutoContrastToLayer: () => void;
+  applyGalleryFilterToLayer: (params: GalleryFilterParams) => void;
+  applyPerspectiveToActiveLayer: (dstCorners: Array<{ x: number; y: number }>) => void;
   resetLevelsAndCurves: () => void;
   resetFilters: () => void;
   commitAdjustmentsHistory: (label?: string) => void;
@@ -304,6 +357,8 @@ interface EditorStoreState {
   toggleInspectorPanel: (panel: keyof InspectorPanelsState) => void;
   setInspectorWidth: (width: number) => void;
   openModal: (modal: keyof Omit<ModalStates, 'editingTextLayerId'>) => void;
+  openFilterGallery: (kind?: FilterGalleryKind) => void;
+  setFilterGalleryKind: (kind: FilterGalleryKind) => void;
   closeModal: (modal: keyof Omit<ModalStates, 'editingTextLayerId'>) => void;
   setEditingTextLayerId: (id: string | null) => void;
   showToast: (message: string, kind?: 'info' | 'success' | 'error') => void;
@@ -406,6 +461,8 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     brushSize: 24,
     brushHardness: 85,
     brushOpacity: 100,
+    brushMode: 'normal',
+    brushSymmetry: 'off',
     eraserSize: 28,
     eraserHardness: 85,
     eraserOpacity: 100,
@@ -423,6 +480,17 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     cloneSampleAllLayers: false,
     healSize: 24,
     healHardness: 65,
+    spotHealMode: 'heal',
+    dodgeBurnMode: 'dodge',
+    dodgeBurnRange: 'midtones',
+    dodgeBurnSize: 28,
+    dodgeBurnHardness: 45,
+    dodgeBurnStrength: 35,
+    smudgeBlurMode: 'smudge',
+    smudgeBlurSize: 28,
+    smudgeBlurHardness: 45,
+    smudgeBlurStrength: 55,
+    eyedropperSampleSize: 1,
     snapToGuides: true,
     moveAutoSelect: true,
     cropAspect: 'free',
@@ -434,17 +502,22 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     shapeStrokeEnabled: false,
     shapeStrokeWidth: 4,
     shapeCornerRadius: 16,
+    shapeSides: 5,
     textFontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif',
     textFontSize: 64,
     textFontWeight: '600',
+    textFontStyle: 'normal',
     textAlign: 'left',
+    textLineHeight: 1.25,
   },
   foregroundColor: '#0A84FF',
   backgroundColor: '#FFFFFF',
   recentSwatches: ['#0A84FF', '#FF453A', '#30D158', '#FFD60A', '#BF5AF2', '#FFFFFF', '#1D1D1F'],
   cropRect: null,
+  cropStraighten: 0,
   cloneSource: null,
   fitTrigger: 0,
+  liveCanvasTick: 0,
   cursorCanvasPos: null,
   viewportSettings: {
     showRulers: true,
@@ -454,6 +527,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     splitPosition: 0.5,
   },
   inspectorOpen: {
+    histogram: true,
     layers: true,
     properties: true,
     adjustments: true,
@@ -467,16 +541,21 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
   recentProjects: [],
   saveStatus: 'idle',
   clipboardLayer: null,
+  clipboardEffects: null,
   preferInternalClipboard: false,
   modals: {
     newProject: false,
     resizeImage: false,
+    canvasSize: false,
     exportImage: false,
     batchProcess: false,
+    filterGallery: false,
+    perspective: false,
     shortcuts: false,
     privacy: false,
     editingTextLayerId: null,
   },
+  filterGalleryKind: 'high-pass',
   toast: null,
 
   initializeApp: async () => {
@@ -561,6 +640,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       activeDocumentId: doc.id,
       view: 'editor',
       cropRect: null,
+      cropStraighten: 0,
       fitTrigger: s.fitTrigger + 1,
     }));
     scheduleAutosave(doc.id, get, set);
@@ -614,6 +694,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       activeDocumentId: doc.id,
       view: 'editor',
       cropRect: null,
+      cropStraighten: 0,
       fitTrigger: s.fitTrigger + 1,
     }));
 
@@ -676,6 +757,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       activeDocumentId: doc.id,
       view: 'editor',
       cropRect: null,
+      cropStraighten: 0,
       fitTrigger: s.fitTrigger + 1,
     }));
     scheduleAutosave(doc.id, get, set);
@@ -712,6 +794,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       activeDocumentId: doc.id,
       view: 'editor',
       cropRect: null,
+      cropStraighten: 0,
       fitTrigger: s.fitTrigger + 1,
     }));
   },
@@ -750,6 +833,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       activeDocumentId: doc.id,
       view: 'editor',
       cropRect: null,
+      cropStraighten: 0,
       fitTrigger: s.fitTrigger + 1,
     }));
   },
@@ -772,11 +856,12 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       activeDocumentId: nextActive,
       view: docs.length === 0 ? 'welcome' : get().view,
       cropRect: null,
+      cropStraighten: 0,
     });
   },
 
   setActiveDocument: (docId) => {
-    set({ activeDocumentId: docId, view: 'editor', cropRect: null });
+    set({ activeDocumentId: docId, view: 'editor', cropRect: null, cropStraighten: 0 });
   },
 
   setActiveTool: (tool) => {
@@ -808,6 +893,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     })),
 
   setCursorCanvasPos: (pos) => set({ cursorCanvasPos: pos }),
+  bumpLiveCanvasTick: () => set((s) => ({ liveCanvasTick: s.liveCanvasTick + 1 })),
 
   setZoom: (zoom, panX, panY) => {
     const clamped = Math.max(0.05, Math.min(16, zoom));
@@ -855,11 +941,15 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
 
   setCropRect: (rect) => set({ cropRect: rect }),
 
+  setCropStraighten: (angle) =>
+    set({ cropStraighten: Math.max(-45, Math.min(45, Math.round(angle * 2) / 2)) }),
+
   setCloneSource: (pos) => set({ cloneSource: pos }),
 
   applyCrop: () => {
     const crop = get().cropRect;
     if (!crop || crop.width < 1 || crop.height < 1) return;
+    const angle = get().cropStraighten;
     withActiveDocMutation(
       get,
       set,
@@ -867,19 +957,20 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
         ...doc,
         width: Math.max(1, Math.round(crop.width)),
         height: Math.max(1, Math.round(crop.height)),
-        layers: cropLayers(doc.layers, crop),
+        layers: cropAndStraightenLayers(doc.layers, crop, angle),
         selection: null,
       }),
-      'Crop Image'
+      Math.abs(angle) >= 0.01 ? 'Crop & Straighten' : 'Crop Image'
     );
     set((s) => ({
       cropRect: null,
+      cropStraighten: 0,
       activeTool: 'move',
       fitTrigger: s.fitTrigger + 1,
     }));
   },
 
-  cancelCrop: () => set({ cropRect: null, activeTool: 'move' }),
+  cancelCrop: () => set({ cropRect: null, cropStraighten: 0, activeTool: 'move' }),
 
   setSelection: (selection) => {
     set((s) => ({
@@ -1208,6 +1299,88 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     }
   },
 
+  strokeSelectionWithColor: (colorHex, widthPx = 2, opacityPercent = 100) => {
+    const doc = get().documents.find((d) => d.id === get().activeDocumentId);
+    if (!doc || !doc.activeLayerId) return;
+    const activeLayer = doc.layers.find((l) => l.id === doc.activeLayerId);
+    if (!activeLayer) return;
+    if (activeLayer.locked) {
+      get().showToast('Active layer is locked.', 'info');
+      return;
+    }
+
+    const editingMask = doc.editingTarget === 'mask' && !!activeLayer.mask;
+    if (!editingMask && activeLayer.type !== 'raster') {
+      get().showToast('Select a Raster Layer or Layer Mask to stroke.', 'info');
+      return;
+    }
+
+    const maskBuf = doc.selection
+      ? rasterizeSelectionToMaskBuffer(doc.selection, doc.width, doc.height)
+      : null;
+
+    if (editingMask && activeLayer.mask) {
+      const nextMaskCanvas = cloneCanvas(activeLayer.mask.canvas);
+      const changed = strokeCanvasWithSelectionMask({
+        targetCanvas: nextMaskCanvas,
+        strokeHex: colorHex,
+        strokeWidthPx: widthPx,
+        opacityPercent,
+        maskData: maskBuf,
+        docWidth: doc.width,
+        docHeight: doc.height,
+        offsetX: 0,
+        offsetY: 0,
+        scaleX: 1,
+        scaleY: 1,
+      });
+      if (!changed) return;
+      withActiveDocMutation(
+        get,
+        set,
+        (curr) => ({
+          ...curr,
+          layers: curr.layers.map((l) =>
+            l.id === activeLayer.id && l.mask
+              ? { ...l, mask: { ...l.mask, canvas: nextMaskCanvas } }
+              : l
+          ),
+        }),
+        'Stroke Mask Selection'
+      );
+      return;
+    }
+
+    if (activeLayer.type === 'raster') {
+      const nextCanvas = cloneCanvas(activeLayer.canvas);
+      const changed = strokeCanvasWithSelectionMask({
+        targetCanvas: nextCanvas,
+        strokeHex: colorHex,
+        strokeWidthPx: widthPx,
+        opacityPercent,
+        maskData: maskBuf,
+        docWidth: doc.width,
+        docHeight: doc.height,
+        offsetX: activeLayer.x,
+        offsetY: activeLayer.y,
+        scaleX: activeLayer.scaleX,
+        scaleY: activeLayer.scaleY,
+      });
+      if (!changed) return;
+      withActiveDocMutation(
+        get,
+        set,
+        (curr) => ({
+          ...curr,
+          layers: curr.layers.map((l) =>
+            l.id === activeLayer.id ? { ...l, canvas: nextCanvas } : l
+          ),
+        }),
+        'Stroke Selection'
+      );
+    }
+  },
+
   selectLayer: (layerId) => {
     set((s) => ({
       documents: s.documents.map((d) => {
@@ -1479,10 +1652,10 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
           fontFamily: opts.textFontFamily,
           fontSize: opts.textFontSize,
           fontWeight: opts.textFontWeight,
-          fontStyle: 'normal',
+          fontStyle: opts.textFontStyle,
           color: fg,
           align: opts.textAlign,
-          lineHeight: 1.25,
+          lineHeight: opts.textLineHeight,
         };
         createdId = layer.id;
         return {
@@ -1504,6 +1677,9 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       'rounded-rect': 'Rounded Rect',
       ellipse: 'Ellipse',
       line: 'Line',
+      polygon: 'Polygon',
+      star: 'Star',
+      arrow: 'Arrow',
     };
 
     withActiveDocMutation(
@@ -1533,6 +1709,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
           strokeEnabled: opts.shapeStrokeEnabled || shapeKind === 'line',
           strokeWidth: opts.shapeStrokeWidth,
           cornerRadius: opts.shapeCornerRadius,
+          ...(shapeKind === 'polygon' || shapeKind === 'star' ? { sides: opts.shapeSides } : {}),
         };
         return {
           ...doc,
@@ -1603,6 +1780,37 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       }),
       commitLabel
     );
+  },
+
+  copyActiveLayerEffects: () => {
+    const doc = get().documents.find((d) => d.id === get().activeDocumentId);
+    if (!doc) return;
+    const layer = doc.layers.find((l) => l.id === doc.activeLayerId);
+    if (!layer) return;
+    const cloned = cloneLayerEffects(layer.effects);
+    set({ clipboardEffects: cloned });
+    get().showToast(`Copied layer style from "${layer.name}"`, 'info');
+  },
+
+  pasteActiveLayerEffects: () => {
+    const clip = get().clipboardEffects;
+    if (!clip) return;
+    withActiveDocMutation(
+      get,
+      set,
+      (doc) => {
+        const active = doc.layers.find((l) => l.id === doc.activeLayerId);
+        if (!active || active.locked) return null;
+        return {
+          ...doc,
+          layers: doc.layers.map((l) =>
+            l.id === active.id ? { ...l, effects: cloneLayerEffects(clip) } : l
+          ),
+        };
+      },
+      'Paste Layer Style'
+    );
+    get().showToast('Pasted layer style', 'success');
   },
 
   flipActiveLayer: (direction) => {
@@ -1920,6 +2128,81 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     );
   },
 
+  stampVisibleLayers: () => {
+    const curDoc = get().documents.find((d) => d.id === get().activeDocumentId);
+    if (!curDoc) return;
+    withActiveDocMutation(
+      get,
+      set,
+      (doc) => {
+        const flatCanvas = compositeLayersToCanvas(
+          doc.width,
+          doc.height,
+          doc.backgroundColor,
+          doc.layers,
+          doc.adjustments
+        );
+        const stamped: RasterLayer = {
+          id: makeId('layer'),
+          name: nextNumberedName(doc.layers, 'Stamped'),
+          type: 'raster',
+          visible: true,
+          locked: false,
+          opacity: 100,
+          blendMode: 'normal',
+          x: 0,
+          y: 0,
+          width: doc.width,
+          height: doc.height,
+          rotation: 0,
+          scaleX: 1,
+          scaleY: 1,
+          canvas: flatCanvas,
+        };
+        return {
+          ...doc,
+          layers: [...doc.layers, stamped],
+          activeLayerId: stamped.id,
+          editingTarget: 'layer',
+        };
+      },
+      'Stamp Visible'
+    );
+    get().showToast('Created stamped composite layer', 'success');
+  },
+
+  rasterizeActiveLayer: () => {
+    const curDoc = get().documents.find((d) => d.id === get().activeDocumentId);
+    if (!curDoc || !curDoc.activeLayerId) return;
+    const target = curDoc.layers.find((l) => l.id === curDoc.activeLayerId);
+    if (!target || target.locked || (target.type !== 'text' && target.type !== 'shape')) {
+      return;
+    }
+
+    withActiveDocMutation(
+      get,
+      set,
+      (doc) => {
+        const layer = doc.layers.find((l) => l.id === doc.activeLayerId);
+        if (!layer || layer.locked || (layer.type !== 'text' && layer.type !== 'shape')) {
+          return null;
+        }
+        const rasterized = rasterizeVectorLayer(layer, makeId('layer'));
+        return {
+          ...doc,
+          layers: doc.layers.map((l) => (l.id === layer.id ? rasterized : l)),
+          activeLayerId: rasterized.id,
+          editingTarget: 'layer',
+        };
+      },
+      'Rasterize Layer'
+    );
+    set((s) => ({
+      modals: { ...s.modals, editingTextLayerId: null },
+    }));
+    get().showToast(`Rasterized "${target.name}" to pixels.`, 'success');
+  },
+
   flattenDocument: () => {
     withActiveDocMutation(
       get,
@@ -2147,6 +2430,83 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     set((s) => ({ fitTrigger: s.fitTrigger + 1 }));
   },
 
+  canvasSizeActiveDocument: (newWidth, newHeight, anchor, extensionColor = 'transparent') => {
+    const w = Math.max(1, Math.min(8192, Math.round(newWidth)));
+    const h = Math.max(1, Math.min(8192, Math.round(newHeight)));
+    withActiveDocMutation(
+      get,
+      set,
+      (doc) => {
+        const nextLayers = canvasSizeLayers(doc.layers, doc.width, doc.height, w, h, anchor);
+        if (extensionColor && extensionColor !== 'transparent') {
+          const bgCanvas = createCanvas(w, h);
+          const ctx = bgCanvas.getContext('2d');
+          if (ctx) {
+            ctx.fillStyle = extensionColor;
+            ctx.fillRect(0, 0, w, h);
+          }
+          const matteLayer: RasterLayer = {
+            id: makeId('layer'),
+            name: 'Canvas Fill',
+            type: 'raster',
+            visible: true,
+            locked: false,
+            opacity: 100,
+            blendMode: 'normal',
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+            rotation: 0,
+            scaleX: 1,
+            scaleY: 1,
+            canvas: bgCanvas,
+          };
+          nextLayers.unshift(matteLayer);
+        }
+        return {
+          ...doc,
+          width: w,
+          height: h,
+          layers: nextLayers,
+          selection: null,
+        };
+      },
+      `Canvas Size (${w}×${h})`
+    );
+    set((s) => ({ fitTrigger: s.fitTrigger + 1 }));
+  },
+
+  trimTransparentPixels: () => {
+    const doc = get().documents.find((d) => d.id === get().activeDocumentId);
+    if (!doc) return;
+    const bounds = computeTrimTransparentBounds(
+      doc.width,
+      doc.height,
+      doc.backgroundColor,
+      doc.layers,
+      doc.adjustments
+    );
+    if (!bounds) {
+      get().showToast('No transparent border pixels to trim.', 'info');
+      return;
+    }
+    withActiveDocMutation(
+      get,
+      set,
+      (curr) => ({
+        ...curr,
+        width: bounds.width,
+        height: bounds.height,
+        layers: cropLayers(curr.layers, bounds),
+        selection: null,
+      }),
+      `Trim Transparent (${bounds.width}×${bounds.height})`
+    );
+    set((s) => ({ fitTrigger: s.fitTrigger + 1 }));
+    get().showToast(`Trimmed canvas to ${bounds.width}×${bounds.height} px`, 'success');
+  },
+
   rotateActiveDocument: (degrees) => {
     withActiveDocMutation(
       get,
@@ -2235,6 +2595,157 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
       },
       commitLabel
     );
+  },
+
+  updateHslBand: (band, patch, commitLabel) => {
+    withActiveDocMutation(
+      get,
+      set,
+      (doc) => {
+        const adj = getTargetAdjustments(doc);
+        const prevHsl = adj.hsl ?? createDefaultHslMixer();
+        return withTargetAdjustments(doc, {
+          ...adj,
+          hsl: {
+            ...prevHsl,
+            [band]: { ...prevHsl[band], ...patch },
+          },
+        });
+      },
+      commitLabel
+    );
+  },
+
+  resetHslMixer: () => {
+    withActiveDocMutation(
+      get,
+      set,
+      (doc) => {
+        const adj = getTargetAdjustments(doc);
+        return withTargetAdjustments(doc, {
+          ...adj,
+          hsl: createDefaultHslMixer(),
+        });
+      },
+      'Reset HSL Color Mixer'
+    );
+  },
+
+  updateGradientMap: (patch, commitLabel) => {
+    withActiveDocMutation(
+      get,
+      set,
+      (doc) => {
+        const adj = getTargetAdjustments(doc);
+        return withTargetAdjustments(doc, {
+          ...adj,
+          gradientMap: { ...(adj.gradientMap ?? DEFAULT_GRADIENT_MAP), ...patch },
+        });
+      },
+      commitLabel
+    );
+  },
+
+  applyAutoLevelsToLayer: () => {
+    const doc = get().documents.find((d) => d.id === get().activeDocumentId);
+    if (!doc) return;
+    const layer = doc.layers.find((l) => l.id === doc.activeLayerId);
+    if (!layer || layer.locked || layer.type !== 'raster') {
+      get().showToast('Select an unlocked raster layer to apply Auto Levels.', 'info');
+      return;
+    }
+    const ok = applyPixelFilterToCanvas({
+      targetCanvas: layer.canvas,
+      transform: (data) => autoLevelsBuffer(data, 0.5),
+      selection: doc.selection,
+      offsetX: layer.x,
+      offsetY: layer.y,
+      scaleX: layer.scaleX,
+      scaleY: layer.scaleY,
+    });
+    if (ok) {
+      get().commitCanvasMutation('Auto Levels');
+      get().showToast('Applied Auto Levels to active layer.', 'success');
+    }
+  },
+
+  applyAutoContrastToLayer: () => {
+    const doc = get().documents.find((d) => d.id === get().activeDocumentId);
+    if (!doc) return;
+    const layer = doc.layers.find((l) => l.id === doc.activeLayerId);
+    if (!layer || layer.locked || layer.type !== 'raster') {
+      get().showToast('Select an unlocked raster layer to apply Auto Contrast.', 'info');
+      return;
+    }
+    const ok = applyPixelFilterToCanvas({
+      targetCanvas: layer.canvas,
+      transform: (data) => autoContrastBuffer(data, 0.5),
+      selection: doc.selection,
+      offsetX: layer.x,
+      offsetY: layer.y,
+      scaleX: layer.scaleX,
+      scaleY: layer.scaleY,
+    });
+    if (ok) {
+      get().commitCanvasMutation('Auto Contrast');
+      get().showToast('Applied Auto Contrast to active layer.', 'success');
+    }
+  },
+
+  applyGalleryFilterToLayer: (params) => {
+    const doc = get().documents.find((d) => d.id === get().activeDocumentId);
+    if (!doc) return;
+    const layer = doc.layers.find((l) => l.id === doc.activeLayerId);
+    if (!layer || layer.locked || layer.type !== 'raster') {
+      get().showToast('Select an unlocked raster layer to apply filters.', 'info');
+      return;
+    }
+    const labelMap: Record<FilterGalleryKind, string> = {
+      'high-pass': 'High Pass',
+      'motion-blur': 'Motion Blur',
+      'oil-paint': 'Oil Paint',
+      halftone: 'Halftone',
+      emboss: 'Emboss',
+      'edge-detect': 'Edge Detect',
+    };
+    const ok = applyPixelFilterToCanvas({
+      targetCanvas: layer.canvas,
+      transform: (data, w, h) => applyGalleryFilterBuffer(data, w, h, params),
+      selection: doc.selection,
+      offsetX: layer.x,
+      offsetY: layer.y,
+      scaleX: layer.scaleX,
+      scaleY: layer.scaleY,
+    });
+    if (ok) {
+      get().commitCanvasMutation(`Filter: ${labelMap[params.kind]}`);
+      get().showToast(`Applied ${labelMap[params.kind]} filter.`, 'success');
+    }
+  },
+
+  applyPerspectiveToActiveLayer: (dstCorners) => {
+    const doc = get().documents.find((d) => d.id === get().activeDocumentId);
+    if (!doc) return;
+    const layer = doc.layers.find((l) => l.id === doc.activeLayerId);
+    if (!layer || layer.locked || layer.type !== 'raster') {
+      get().showToast('Select an unlocked raster layer to transform perspective.', 'info');
+      return;
+    }
+    const warped = warpCanvasPerspective(layer.canvas, dstCorners);
+    withActiveDocMutation(
+      get,
+      set,
+      (curr) => ({
+        ...curr,
+        layers: curr.layers.map((l) =>
+          l.id === layer.id && l.type === 'raster' ? { ...l, canvas: warped } : l
+        ),
+        selection: null,
+      }),
+      'Perspective Transform'
+    );
+    set((s) => ({ liveCanvasTick: s.liveCanvasTick + 1 }));
+    get().showToast('Applied perspective warp to active layer.', 'success');
   },
 
   resetLevelsAndCurves: () => {
@@ -2368,7 +2879,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     };
     const nextDocs = [...state.documents];
     nextDocs[idx] = nextDoc;
-    set({ documents: nextDocs, cropRect: null });
+    set({ documents: nextDocs, cropRect: null, cropStraighten: 0 });
     scheduleAutosave(nextDoc.id, get, set);
   },
 
@@ -2398,7 +2909,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     };
     const nextDocs = [...state.documents];
     nextDocs[idx] = nextDoc;
-    set({ documents: nextDocs, cropRect: null });
+    set({ documents: nextDocs, cropRect: null, cropStraighten: 0 });
     scheduleAutosave(nextDoc.id, get, set);
   },
 
@@ -2429,7 +2940,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     };
     const nextDocs = [...state.documents];
     nextDocs[idx] = nextDoc;
-    set({ documents: nextDocs, cropRect: null });
+    set({ documents: nextDocs, cropRect: null, cropStraighten: 0 });
     scheduleAutosave(nextDoc.id, get, set);
   },
 
@@ -2482,6 +2993,14 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
 
   openModal: (modal) =>
     set((s) => ({ modals: { ...s.modals, [modal]: true } })),
+
+  openFilterGallery: (kind) =>
+    set((s) => ({
+      filterGalleryKind: kind ?? s.filterGalleryKind,
+      modals: { ...s.modals, filterGallery: true },
+    })),
+
+  setFilterGalleryKind: (kind) => set({ filterGalleryKind: kind }),
 
   closeModal: (modal) =>
     set((s) => ({ modals: { ...s.modals, [modal]: false } })),

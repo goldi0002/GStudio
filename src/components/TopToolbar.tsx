@@ -16,7 +16,7 @@ import { decodeImageFile, pickLocalFiles } from '../persistence/fileAccess';
 import { useEditorStore } from '../store/useEditorStore';
 import type { SerializedProject } from '../types/editor';
 
-type MenuKey = 'file' | 'edit' | 'image' | 'layer' | 'view' | 'help' | null;
+type MenuKey = 'file' | 'edit' | 'image' | 'layer' | 'filter' | 'view' | 'help' | null;
 
 interface MenuItem {
   label?: string;
@@ -44,6 +44,9 @@ export const TopToolbar: React.FC = () => {
     toggleViewportSetting,
     setBeforeAfterMode,
     openModal,
+    openFilterGallery,
+    applyAutoLevelsToLayer,
+    applyAutoContrastToLayer,
     openDecodedImage,
     placeImageAsLayer,
     openProjectData,
@@ -55,15 +58,18 @@ export const TopToolbar: React.FC = () => {
     cutActiveLayer,
     pasteClipboard,
     clipboardLayer,
+    clipboardEffects,
     foregroundColor,
     deleteSelectionOrLayer,
     fillSelectionWithColor,
+    strokeSelectionWithColor,
     featherActiveSelection,
     applySelectionAsMask,
     selectAll,
     invertActiveSelection,
     clearSelection,
     cropToSelection,
+    trimTransparentPixels,
     rotateActiveDocument,
     flipActiveDocument,
     flattenDocument,
@@ -75,6 +81,10 @@ export const TopToolbar: React.FC = () => {
     addShapeLayer,
     layerViaCopyOrDuplicate,
     mergeLayerDown,
+    stampVisibleLayers,
+    copyActiveLayerEffects,
+    pasteActiveLayerEffects,
+    rasterizeActiveLayer,
     deleteLayer,
     moveLayerOrder,
     setEditingTextLayerId,
@@ -216,6 +226,11 @@ export const TopToolbar: React.FC = () => {
         action: () => fillSelectionWithColor(foregroundColor, 100),
       },
       {
+        label: 'Stroke Selection (FG, 2px)',
+        disabled: !activeDoc,
+        action: () => strokeSelectionWithColor(foregroundColor, 2, 100),
+      },
+      {
         label: 'Delete Selection / Layer',
         shortcut: '⌫',
         disabled: !activeDoc,
@@ -253,9 +268,24 @@ export const TopToolbar: React.FC = () => {
         action: () => openModal('resizeImage'),
       },
       {
+        label: 'Canvas Size…',
+        disabled: !activeDoc,
+        action: () => openModal('canvasSize'),
+      },
+      {
         label: 'Crop to Selection',
         disabled: !activeDoc?.selection,
         action: cropToSelection,
+      },
+      {
+        label: 'Trim Transparent Pixels',
+        disabled: !activeDoc,
+        action: trimTransparentPixels,
+      },
+      {
+        label: 'Perspective & Keystone…',
+        disabled: !activeLayer || activeLayer.type !== 'raster' || activeLayer.locked,
+        action: () => openModal('perspective'),
       },
       { divider: true },
       {
@@ -358,6 +388,35 @@ export const TopToolbar: React.FC = () => {
         action: () => activeLayer && mergeLayerDown(activeLayer.id),
       },
       {
+        label: 'Stamp Visible',
+        shortcut: '⇧⌥⌘E',
+        disabled: !activeDoc,
+        action: stampVisibleLayers,
+      },
+      {
+        label: 'Rasterize Layer',
+        disabled:
+          !activeLayer ||
+          activeLayer.locked ||
+          (activeLayer.type !== 'text' && activeLayer.type !== 'shape'),
+        action: rasterizeActiveLayer,
+      },
+      {
+        label: 'Perspective & Keystone…',
+        disabled: !activeLayer || activeLayer.type !== 'raster' || activeLayer.locked,
+        action: () => openModal('perspective'),
+      },
+      {
+        label: 'Copy Layer Style',
+        disabled: !activeLayer,
+        action: copyActiveLayerEffects,
+      },
+      {
+        label: 'Paste Layer Style',
+        disabled: !activeLayer || activeLayer.locked || !clipboardEffects,
+        action: pasteActiveLayerEffects,
+      },
+      {
         label: 'Bring Forward',
         disabled:
           !activeLayer || !activeDoc || activeLayerIndex >= activeDoc.layers.length - 1,
@@ -373,6 +432,55 @@ export const TopToolbar: React.FC = () => {
         label: 'Delete Layer',
         disabled: !activeLayer || !activeDoc || activeDoc.layers.length <= 1,
         action: () => activeLayer && deleteLayer(activeLayer.id),
+      },
+    ],
+    filter: [
+      {
+        label: 'Filter Gallery…',
+        disabled: !activeLayer || activeLayer.type !== 'raster' || activeLayer.locked,
+        action: () => openFilterGallery(),
+      },
+      { divider: true },
+      {
+        label: 'Auto Levels',
+        disabled: !activeLayer || activeLayer.type !== 'raster' || activeLayer.locked,
+        action: applyAutoLevelsToLayer,
+      },
+      {
+        label: 'Auto Contrast',
+        disabled: !activeLayer || activeLayer.type !== 'raster' || activeLayer.locked,
+        action: applyAutoContrastToLayer,
+      },
+      { divider: true },
+      {
+        label: 'High Pass…',
+        disabled: !activeLayer || activeLayer.type !== 'raster' || activeLayer.locked,
+        action: () => openFilterGallery('high-pass'),
+      },
+      {
+        label: 'Motion Blur…',
+        disabled: !activeLayer || activeLayer.type !== 'raster' || activeLayer.locked,
+        action: () => openFilterGallery('motion-blur'),
+      },
+      {
+        label: 'Oil Paint…',
+        disabled: !activeLayer || activeLayer.type !== 'raster' || activeLayer.locked,
+        action: () => openFilterGallery('oil-paint'),
+      },
+      {
+        label: 'Halftone Dot Screen…',
+        disabled: !activeLayer || activeLayer.type !== 'raster' || activeLayer.locked,
+        action: () => openFilterGallery('halftone'),
+      },
+      {
+        label: 'Emboss…',
+        disabled: !activeLayer || activeLayer.type !== 'raster' || activeLayer.locked,
+        action: () => openFilterGallery('emboss'),
+      },
+      {
+        label: 'Edge Detect…',
+        disabled: !activeLayer || activeLayer.type !== 'raster' || activeLayer.locked,
+        action: () => openFilterGallery('edge-detect'),
       },
     ],
     view: [
@@ -445,6 +553,7 @@ export const TopToolbar: React.FC = () => {
     { key: 'edit', label: 'Edit' },
     { key: 'image', label: 'Image' },
     { key: 'layer', label: 'Layer' },
+    { key: 'filter', label: 'Filter' },
     { key: 'view', label: 'View' },
     { key: 'help', label: 'Help' },
   ];

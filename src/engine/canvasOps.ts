@@ -9,6 +9,7 @@ import type {
   Adjustments,
   AdjustmentLayer,
   BlendMode,
+  CanvasAnchor,
   ColorOverlayEffect,
   CropRect,
   DocumentState,
@@ -25,6 +26,7 @@ import type {
   RasterLayer,
   SelectionPoint,
   SelectionState,
+  ShapeKind,
   ShapeLayer,
   SnapGuide,
   TextLayer,
@@ -675,6 +677,56 @@ export function renderLayerNodeToContext(
   ctx.restore();
 }
 
+export function computeShapePathPoints(
+  width: number,
+  height: number,
+  shapeKind: Extract<ShapeKind, 'polygon' | 'star' | 'arrow'>,
+  sides = 5
+): Array<{ x: number; y: number }> {
+  const n = Math.max(3, Math.min(16, Math.round(sides || 5)));
+  const cx = width * 0.5;
+  const cy = height * 0.5;
+  const rx = Math.max(1, width * 0.5);
+  const ry = Math.max(1, height * 0.5);
+
+  if (shapeKind === 'polygon') {
+    const pts: Array<{ x: number; y: number }> = [];
+    for (let i = 0; i < n; i++) {
+      const a = -Math.PI / 2 + (i * Math.PI * 2) / n;
+      pts.push({ x: cx + Math.cos(a) * rx, y: cy + Math.sin(a) * ry });
+    }
+    return pts;
+  }
+
+  if (shapeKind === 'star') {
+    const pts: Array<{ x: number; y: number }> = [];
+    const innerRatio = 0.42;
+    const total = n * 2;
+    for (let i = 0; i < total; i++) {
+      const rScale = i % 2 === 0 ? 1 : innerRatio;
+      const a = -Math.PI / 2 + (i * Math.PI * 2) / total;
+      pts.push({
+        x: cx + Math.cos(a) * rx * rScale,
+        y: cy + Math.sin(a) * ry * rScale,
+      });
+    }
+    return pts;
+  }
+
+  const headW = Math.max(4, Math.min(width * 0.46, height * 0.72));
+  const shaftX = Math.max(0, width - headW);
+  const shaftHalfH = height * 0.2;
+  return [
+    { x: 0, y: cy - shaftHalfH },
+    { x: shaftX, y: cy - shaftHalfH },
+    { x: shaftX, y: 0 },
+    { x: width, y: cy },
+    { x: shaftX, y: height },
+    { x: shaftX, y: cy + shaftHalfH },
+    { x: 0, y: cy + shaftHalfH },
+  ];
+}
+
 function renderShapeLayer(ctx: CanvasRenderingContext2D, layer: ShapeLayer): void {
   const {
     width,
@@ -686,6 +738,7 @@ function renderShapeLayer(ctx: CanvasRenderingContext2D, layer: ShapeLayer): voi
     strokeEnabled,
     strokeWidth,
     cornerRadius,
+    sides,
   } = layer;
   ctx.beginPath();
 
@@ -707,6 +760,15 @@ function renderShapeLayer(ctx: CanvasRenderingContext2D, layer: ShapeLayer): voi
   } else if (shapeKind === 'line') {
     ctx.moveTo(0, height / 2);
     ctx.lineTo(width, height / 2);
+  } else if (shapeKind === 'polygon' || shapeKind === 'star' || shapeKind === 'arrow') {
+    const pts = computeShapePathPoints(width, height, shapeKind, sides);
+    if (pts.length > 0) {
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) {
+        ctx.lineTo(pts[i].x, pts[i].y);
+      }
+      ctx.closePath();
+    }
   }
 
   if (fillEnabled && shapeKind !== 'line') {
@@ -780,6 +842,298 @@ export function compositeLayersToCanvas(
   }
 
   return out;
+}
+
+export interface SampledHistogramBuffer {
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+  scale: number;
+  kindLabel: string;
+  hidden: boolean;
+}
+
+function scaleLayerEffectsForPreview(
+  effects: LayerEffects | null | undefined,
+  scale: number
+): LayerEffects | null {
+  if (!effects) return null;
+  return {
+    dropShadow: {
+      ...effects.dropShadow,
+      blur: effects.dropShadow.blur * scale,
+      distance: effects.dropShadow.distance * scale,
+    },
+    outerGlow: {
+      ...effects.outerGlow,
+      blur: effects.outerGlow.blur * scale,
+      spread: effects.outerGlow.spread * scale,
+    },
+    stroke: {
+      ...effects.stroke,
+      width: Math.max(1, effects.stroke.width * scale),
+    },
+    colorOverlay: { ...effects.colorOverlay },
+    innerShadow: {
+      ...effects.innerShadow,
+      blur: effects.innerShadow.blur * scale,
+      distance: effects.innerShadow.distance * scale,
+    },
+    innerGlow: {
+      ...effects.innerGlow,
+      blur: effects.innerGlow.blur * scale,
+      spread: effects.innerGlow.spread * scale,
+    },
+  };
+}
+
+export function scaleAdjustmentsForSample(adj: Adjustments, scale: number): Adjustments {
+  if (scale >= 0.99 || !adj.filters) return adj;
+  const f = adj.filters;
+  return {
+    ...adj,
+    filters: {
+      ...f,
+      blur: f.blur > 0 ? Math.max(0.5, f.blur * scale) : 0,
+      tiltShiftBlur:
+        (f.tiltShiftBlur ?? 0) > 0
+          ? Math.max(0.5, (f.tiltShiftBlur ?? 0) * scale)
+          : 0,
+      pixelate: f.pixelate > 1 ? Math.max(2, Math.round(f.pixelate * scale)) : 1,
+      chromaticAberration:
+        (f.chromaticAberration ?? 0) > 0
+          ? Math.max(1, Math.round((f.chromaticAberration ?? 0) * scale))
+          : 0,
+    },
+  };
+}
+
+function scaleLayerForHistogram(layer: Layer, scale: number): Layer {
+  const scaledEffects = scaleLayerEffectsForPreview(layer.effects, scale);
+  if (layer.type === 'adjustment') {
+    return {
+      ...layer,
+      id: `${layer.id}__hist`,
+      x: 0,
+      y: 0,
+      width: Math.max(1, Math.round(layer.width * scale)),
+      height: Math.max(1, Math.round(layer.height * scale)),
+      adjustments: scaleAdjustmentsForSample(layer.adjustments, scale),
+    };
+  }
+  if (layer.type === 'group') {
+    return {
+      ...layer,
+      x: layer.x * scale,
+      y: layer.y * scale,
+      width: Math.max(1, layer.width * scale),
+      height: Math.max(1, layer.height * scale),
+      effects: scaledEffects,
+    };
+  }
+  if (layer.type === 'text') {
+    return {
+      ...layer,
+      x: layer.x * scale,
+      y: layer.y * scale,
+      width: Math.max(1, layer.width * scale),
+      height: Math.max(1, layer.height * scale),
+      fontSize: Math.max(1, layer.fontSize * scale),
+      effects: scaledEffects,
+    };
+  }
+  if (layer.type === 'shape') {
+    return {
+      ...layer,
+      x: layer.x * scale,
+      y: layer.y * scale,
+      width: Math.max(1, layer.width * scale),
+      height: Math.max(1, layer.height * scale),
+      strokeWidth: Math.max(0.5, layer.strokeWidth * scale),
+      cornerRadius: layer.cornerRadius * scale,
+      effects: scaledEffects,
+    };
+  }
+  return {
+    ...layer,
+    x: layer.x * scale,
+    y: layer.y * scale,
+    width: Math.max(1, layer.width * scale),
+    height: Math.max(1, layer.height * scale),
+    effects: scaledEffects,
+  };
+}
+
+export function sampleDocumentBaseForHistogram(
+  docWidth: number,
+  docHeight: number,
+  backgroundColor: string,
+  layers: Layer[],
+  maxDim = 180
+): SampledHistogramBuffer {
+  const scale = Math.min(1, maxDim / Math.max(1, docWidth, docHeight));
+  const sw = Math.max(1, Math.round(docWidth * scale));
+  const sh = Math.max(1, Math.round(docHeight * scale));
+  const scaledLayers = layers.map((l) => scaleLayerForHistogram(l, scale));
+  const canvas = compositeLayersToCanvas(sw, sh, backgroundColor, scaledLayers);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  return {
+    data: ctx ? ctx.getImageData(0, 0, sw, sh).data : new Uint8ClampedArray(0),
+    width: sw,
+    height: sh,
+    scale,
+    kindLabel: 'Composite',
+    hidden: false,
+  };
+}
+
+export function sampleActiveLayerForHistogram(
+  layer: Layer | null | undefined,
+  allLayers: Layer[],
+  docWidth: number,
+  docHeight: number,
+  backgroundColor: string,
+  editingTarget: 'layer' | 'mask',
+  maxDim = 180
+): SampledHistogramBuffer {
+  if (!layer) {
+    return {
+      data: new Uint8ClampedArray(0),
+      width: 0,
+      height: 0,
+      scale: 1,
+      kindLabel: 'No Layer',
+      hidden: false,
+    };
+  }
+
+  if (editingTarget === 'mask' && layer.mask) {
+    const mw = Math.max(1, layer.mask.canvas.width);
+    const mh = Math.max(1, layer.mask.canvas.height);
+    const scale = Math.min(1, maxDim / Math.max(mw, mh));
+    const sw = Math.max(1, Math.round(mw * scale));
+    const sh = Math.max(1, Math.round(mh * scale));
+    const c = createCanvas(sw, sh);
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    if (!ctx) {
+      return { data: new Uint8ClampedArray(0), width: sw, height: sh, scale, kindLabel: 'Mask', hidden: !layer.mask.enabled };
+    }
+    ctx.drawImage(layer.mask.canvas, 0, 0, sw, sh);
+    const data = ctx.getImageData(0, 0, sw, sh).data;
+    if (layer.mask.inverted) {
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = 255 - data[i];
+        data[i + 1] = 255 - data[i + 1];
+        data[i + 2] = 255 - data[i + 2];
+      }
+    }
+    return {
+      data,
+      width: sw,
+      height: sh,
+      scale,
+      kindLabel: 'Mask',
+      hidden: !layer.mask.enabled,
+    };
+  }
+
+  if (layer.type === 'raster') {
+    const cw = Math.max(1, layer.canvas.width);
+    const ch = Math.max(1, layer.canvas.height);
+    const scale = Math.min(1, maxDim / Math.max(cw, ch));
+    const sw = Math.max(1, Math.round(cw * scale));
+    const sh = Math.max(1, Math.round(ch * scale));
+    const c = createCanvas(sw, sh);
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    if (!ctx) {
+      return { data: new Uint8ClampedArray(0), width: sw, height: sh, scale, kindLabel: 'Raster', hidden: !layer.visible };
+    }
+    ctx.drawImage(layer.canvas, 0, 0, sw, sh);
+    return {
+      data: ctx.getImageData(0, 0, sw, sh).data,
+      width: sw,
+      height: sh,
+      scale,
+      kindLabel: 'Raster',
+      hidden: !layer.visible,
+    };
+  }
+
+  if (layer.type === 'text' || layer.type === 'shape') {
+    const effW = Math.max(1, layer.width * layer.scaleX);
+    const effH = Math.max(1, layer.height * layer.scaleY);
+    const scale = Math.min(1, maxDim / Math.max(effW, effH));
+    const sw = Math.max(1, Math.round(effW * scale));
+    const sh = Math.max(1, Math.round(effH * scale));
+    const scaled = scaleLayerForHistogram(
+      { ...layer, x: 0, y: 0, rotation: 0, visible: true, opacity: 100, blendMode: 'normal' },
+      scale
+    ) as Exclude<Layer, GroupLayer | AdjustmentLayer>;
+    const c = createCanvas(sw, sh);
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    if (!ctx) {
+      return {
+        data: new Uint8ClampedArray(0),
+        width: sw,
+        height: sh,
+        scale,
+        kindLabel: layer.type === 'text' ? 'Text' : 'Shape',
+        hidden: !layer.visible,
+      };
+    }
+    drawLayerGeometryToContext(ctx, scaled);
+    return {
+      data: ctx.getImageData(0, 0, sw, sh).data,
+      width: sw,
+      height: sh,
+      scale,
+      kindLabel: layer.type === 'text' ? 'Text' : 'Shape',
+      hidden: !layer.visible,
+    };
+  }
+
+  if (layer.type === 'group') {
+    const scale = Math.min(1, maxDim / Math.max(1, docWidth, docHeight));
+    const sw = Math.max(1, Math.round(docWidth * scale));
+    const sh = Math.max(1, Math.round(docHeight * scale));
+    const descendants = allLayers
+      .filter((l) => l.parentId === layer.id || l.id === layer.id)
+      .map((l) =>
+        scaleLayerForHistogram(
+          l.id === layer.id ? { ...l, visible: true, opacity: 100, blendMode: 'normal', parentId: null } : l,
+          scale
+        )
+      );
+    const c = compositeLayersToCanvas(sw, sh, 'transparent', descendants);
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    return {
+      data: ctx ? ctx.getImageData(0, 0, sw, sh).data : new Uint8ClampedArray(0),
+      width: sw,
+      height: sh,
+      scale,
+      kindLabel: 'Group',
+      hidden: !layer.visible,
+    };
+  }
+
+  // Adjustment layer: show composite output up through this adjustment layer
+  const scale = Math.min(1, maxDim / Math.max(1, docWidth, docHeight));
+  const sw = Math.max(1, Math.round(docWidth * scale));
+  const sh = Math.max(1, Math.round(docHeight * scale));
+  const idx = allLayers.findIndex((l) => l.id === layer.id);
+  const upThrough = (idx === -1 ? allLayers : allLayers.slice(0, idx + 1)).map((l) =>
+    scaleLayerForHistogram(l.id === layer.id ? { ...l, visible: true } : l, scale)
+  );
+  const c = compositeLayersToCanvas(sw, sh, backgroundColor, upThrough);
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  return {
+    data: ctx ? ctx.getImageData(0, 0, sw, sh).data : new Uint8ClampedArray(0),
+    width: sw,
+    height: sh,
+    scale,
+    kindLabel: 'Adjustment Output',
+    hidden: !layer.visible,
+  };
 }
 
 export function generateThumbnailDataUrl(
@@ -976,6 +1330,214 @@ export function cropLayers(layers: Layer[], crop: CropRect): Layer[] {
       ...(layer.type === 'raster' ? { canvas: cloneCanvas(layer.canvas) } : {}),
     };
   });
+}
+
+export function cropAndStraightenLayers(
+  layers: Layer[],
+  crop: CropRect,
+  angleDeg: number
+): Layer[] {
+  if (Math.abs(angleDeg) < 0.01) {
+    return cropLayers(layers, crop);
+  }
+
+  const cx = Math.round(crop.x);
+  const cy = Math.round(crop.y);
+  const cw = Math.max(1, Math.round(crop.width));
+  const ch = Math.max(1, Math.round(crop.height));
+  const cropCx = cx + cw / 2;
+  const cropCy = cy + ch / 2;
+  const rad = (angleDeg * Math.PI) / 180;
+
+  return layers.map((layer): Layer => {
+    let nextMask: LayerMask | null = null;
+    if (layer.mask) {
+      const mCanvas = createWhiteMaskCanvas(cw, ch);
+      const mctx = mCanvas.getContext('2d');
+      if (mctx) {
+        mctx.save();
+        mctx.translate(cw / 2, ch / 2);
+        mctx.rotate(rad);
+        mctx.translate(-cropCx, -cropCy);
+        mctx.drawImage(layer.mask.canvas, 0, 0);
+        mctx.restore();
+      }
+      nextMask = {
+        canvas: mCanvas,
+        enabled: layer.mask.enabled,
+        inverted: layer.mask.inverted,
+      };
+    }
+
+    if (layer.type === 'group' || layer.type === 'adjustment') {
+      return {
+        ...layer,
+        width: cw,
+        height: ch,
+        mask: nextMask,
+      };
+    }
+
+    if (layer.type === 'raster') {
+      const baked = createCanvas(cw, ch);
+      const bctx = baked.getContext('2d');
+      if (bctx) {
+        bctx.imageSmoothingEnabled = true;
+        bctx.imageSmoothingQuality = 'high';
+        bctx.save();
+        bctx.translate(cw / 2, ch / 2);
+        bctx.rotate(rad);
+        bctx.translate(-cropCx, -cropCy);
+        drawLayerGeometryToContext(bctx, layer);
+        bctx.restore();
+      }
+      return {
+        ...layer,
+        x: 0,
+        y: 0,
+        width: cw,
+        height: ch,
+        rotation: 0,
+        scaleX: 1,
+        scaleY: 1,
+        flipX: false,
+        flipY: false,
+        canvas: baked,
+        mask: nextMask,
+      };
+    }
+
+    // Text and Shape layers keep vector editability: orbit their center and add angleDeg
+    const effW = layer.width * layer.scaleX;
+    const effH = layer.height * layer.scaleY;
+    const layerCx = layer.x + effW / 2;
+    const layerCy = layer.y + effH / 2;
+    const rotated = rotatePointAroundCenter(layerCx, layerCy, cropCx, cropCy, angleDeg);
+    const nextCx = rotated.x - cx;
+    const nextCy = rotated.y - cy;
+
+    return {
+      ...layer,
+      x: nextCx - effW / 2,
+      y: nextCy - effH / 2,
+      rotation: snapRotationAngle((layer.rotation || 0) + angleDeg, false),
+      mask: nextMask,
+    };
+  });
+}
+
+export function rasterizeVectorLayer(
+  layer: TextLayer | ShapeLayer,
+  newId: string
+): RasterLayer {
+  const effW = layer.width * layer.scaleX;
+  const effH = layer.height * layer.scaleY;
+  const cx = layer.x + effW / 2;
+  const cy = layer.y + effH / 2;
+  const corners = [
+    rotatePointAroundCenter(layer.x, layer.y, cx, cy, layer.rotation || 0),
+    rotatePointAroundCenter(layer.x + effW, layer.y, cx, cy, layer.rotation || 0),
+    rotatePointAroundCenter(layer.x + effW, layer.y + effH, cx, cy, layer.rotation || 0),
+    rotatePointAroundCenter(layer.x, layer.y + effH, cx, cy, layer.rotation || 0),
+  ];
+  const minX = Math.min(...corners.map((c) => c.x));
+  const maxX = Math.max(...corners.map((c) => c.x));
+  const minY = Math.min(...corners.map((c) => c.y));
+  const maxY = Math.max(...corners.map((c) => c.y));
+
+  const maxScale = Math.max(Math.abs(layer.scaleX || 1), Math.abs(layer.scaleY || 1));
+  const pad =
+    layer.type === 'shape'
+      ? Math.max(16, Math.ceil(layer.strokeWidth * maxScale + 16))
+      : Math.max(24, Math.ceil(layer.fontSize * maxScale * 0.6 + 24));
+
+  const boxX = Math.floor(minX - pad);
+  const boxY = Math.floor(minY - pad);
+  const boxW = Math.max(1, Math.min(8192, Math.ceil(maxX + pad) - boxX));
+  const boxH = Math.max(1, Math.min(8192, Math.ceil(maxY + pad) - boxY));
+
+  const scratch = createCanvas(boxW, boxH);
+  const sctx = scratch.getContext('2d', { willReadFrequently: true });
+  if (sctx) {
+    sctx.save();
+    sctx.translate(-boxX, -boxY);
+    drawLayerGeometryToContext(sctx, layer);
+    sctx.restore();
+
+    const data = sctx.getImageData(0, 0, boxW, boxH).data;
+    let tMinX = boxW;
+    let tMinY = boxH;
+    let tMaxX = -1;
+    let tMaxY = -1;
+    for (let y = 0; y < boxH; y++) {
+      const row = y * boxW;
+      for (let x = 0; x < boxW; x++) {
+        if (data[(row + x) * 4 + 3] > 0) {
+          if (x < tMinX) tMinX = x;
+          if (y < tMinY) tMinY = y;
+          if (x > tMaxX) tMaxX = x;
+          if (y > tMaxY) tMaxY = y;
+        }
+      }
+    }
+
+    if (tMaxX >= tMinX && tMaxY >= tMinY) {
+      const tw = tMaxX - tMinX + 1;
+      const th = tMaxY - tMinY + 1;
+      const outCanvas = createCanvas(tw, th);
+      const octx = outCanvas.getContext('2d');
+      if (octx) {
+        octx.drawImage(scratch, tMinX, tMinY, tw, th, 0, 0, tw, th);
+      }
+      return {
+        id: newId,
+        name: layer.name,
+        type: 'raster',
+        visible: layer.visible,
+        locked: layer.locked,
+        opacity: layer.opacity,
+        blendMode: layer.blendMode,
+        parentId: layer.parentId ?? null,
+        x: boxX + tMinX,
+        y: boxY + tMinY,
+        width: tw,
+        height: th,
+        rotation: 0,
+        scaleX: 1,
+        scaleY: 1,
+        flipX: false,
+        flipY: false,
+        mask: cloneMask(layer.mask),
+        effects: cloneLayerEffects(layer.effects),
+        canvas: outCanvas,
+      };
+    }
+  }
+
+  const fallbackW = Math.max(1, Math.round(effW));
+  const fallbackH = Math.max(1, Math.round(effH));
+  return {
+    id: newId,
+    name: layer.name,
+    type: 'raster',
+    visible: layer.visible,
+    locked: layer.locked,
+    opacity: layer.opacity,
+    blendMode: layer.blendMode,
+    parentId: layer.parentId ?? null,
+    x: Math.round(layer.x),
+    y: Math.round(layer.y),
+    width: fallbackW,
+    height: fallbackH,
+    rotation: 0,
+    scaleX: 1,
+    scaleY: 1,
+    flipX: false,
+    flipY: false,
+    mask: cloneMask(layer.mask),
+    effects: cloneLayerEffects(layer.effects),
+    canvas: createCanvas(fallbackW, fallbackH),
+  };
 }
 
 export function resizeLayers(
@@ -2335,6 +2897,532 @@ export function applySpotHealDab(params: {
   return changed;
 }
 
+export function dodgeBurnBuffer(params: {
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+  radius: number;
+  hardness: number; // 0..1
+  strength: number; // 0..1
+  mode: 'dodge' | 'burn' | 'saturate' | 'desaturate';
+  range: 'shadows' | 'midtones' | 'highlights';
+  docOffsetX?: number;
+  docOffsetY?: number;
+  scaleX?: number;
+  scaleY?: number;
+  selection?: SelectionState | null;
+}): boolean {
+  const {
+    data,
+    width,
+    height,
+    centerX,
+    centerY,
+    radius,
+    hardness,
+    strength,
+    mode,
+    range,
+    docOffsetX = 0,
+    docOffsetY = 0,
+    scaleX = 1,
+    scaleY = 1,
+    selection = null,
+  } = params;
+
+  const r = Math.max(0.5, radius);
+  const str = Math.max(0, Math.min(1, strength));
+  if (str <= 0) return false;
+
+  const x0 = Math.max(0, Math.floor(centerX - r));
+  const x1 = Math.min(width - 1, Math.ceil(centerX + r));
+  const y0 = Math.max(0, Math.floor(centerY - r));
+  const y1 = Math.min(height - 1, Math.ceil(centerY + r));
+  if (x1 < x0 || y1 < y0) return false;
+
+  const inner = Math.max(0, Math.min(0.98, hardness * 0.85));
+  const sx = scaleX || 1;
+  const sy = scaleY || 1;
+  let modified = false;
+
+  const clampByte = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : Math.round(v));
+
+  for (let py = y0; py <= y1; py++) {
+    for (let px = x0; px <= x1; px++) {
+      const dist = Math.hypot(px - centerX, py - centerY);
+      if (dist > r) continue;
+
+      if (selection) {
+        const docX = docOffsetX + px * sx;
+        const docY = docOffsetY + py * sy;
+        if (!isPointInSelection(docX, docY, selection)) continue;
+      }
+
+      const idx = (py * width + px) * 4;
+      if (data[idx + 3] === 0) continue;
+
+      const dNorm = dist / r;
+      const falloff =
+        hardness >= 0.99 || dNorm <= inner
+          ? 1
+          : 1 - smoothstep01((dNorm - inner) / (1 - inner));
+      if (falloff <= 0) continue;
+
+      const rv = data[idx];
+      const gv = data[idx + 1];
+      const bv = data[idx + 2];
+      const lum = (0.2126 * rv + 0.7152 * gv + 0.0722 * bv) / 255;
+
+      let toneWeight = 1;
+      if (range === 'shadows') {
+        toneWeight = 0.2 + 0.8 * Math.pow(1 - lum, 1.35);
+      } else if (range === 'midtones') {
+        toneWeight = 0.3 + 0.7 * (4 * lum * (1 - lum));
+      } else {
+        toneWeight = 0.2 + 0.8 * Math.pow(lum, 1.35);
+      }
+
+      const amt = str * falloff * toneWeight * 0.45;
+      if (amt <= 0) continue;
+
+      if (mode === 'dodge') {
+        data[idx] = clampByte(rv + (255 - rv) * amt + 8 * amt);
+        data[idx + 1] = clampByte(gv + (255 - gv) * amt + 8 * amt);
+        data[idx + 2] = clampByte(bv + (255 - bv) * amt + 8 * amt);
+      } else if (mode === 'burn') {
+        const factor = Math.max(0, 1 - amt);
+        data[idx] = clampByte(rv * factor - 6 * amt);
+        data[idx + 1] = clampByte(gv * factor - 6 * amt);
+        data[idx + 2] = clampByte(bv * factor - 6 * amt);
+      } else if (mode === 'saturate') {
+        const luma = 0.2126 * rv + 0.7152 * gv + 0.0722 * bv;
+        const satMult = 1 + amt * 1.65;
+        data[idx] = clampByte(luma + (rv - luma) * satMult);
+        data[idx + 1] = clampByte(luma + (gv - luma) * satMult);
+        data[idx + 2] = clampByte(luma + (bv - luma) * satMult);
+      } else {
+        const luma = 0.2126 * rv + 0.7152 * gv + 0.0722 * bv;
+        const satMult = Math.max(0, 1 - amt * 1.4);
+        data[idx] = clampByte(luma + (rv - luma) * satMult);
+        data[idx + 1] = clampByte(luma + (gv - luma) * satMult);
+        data[idx + 2] = clampByte(luma + (bv - luma) * satMult);
+      }
+      modified = true;
+    }
+  }
+
+  return modified;
+}
+
+export function applyDodgeBurnDab(params: {
+  targetCanvas: HTMLCanvasElement;
+  centerX: number;
+  centerY: number;
+  radius: number;
+  hardness: number;
+  strength: number;
+  mode: 'dodge' | 'burn' | 'saturate' | 'desaturate';
+  range: 'shadows' | 'midtones' | 'highlights';
+  docOffsetX?: number;
+  docOffsetY?: number;
+  scaleX?: number;
+  scaleY?: number;
+  selection?: SelectionState | null;
+}): boolean {
+  const ctx = params.targetCanvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return false;
+
+  const r = Math.max(1, Math.ceil(params.radius));
+  const x0 = Math.max(0, Math.floor(params.centerX - r));
+  const y0 = Math.max(0, Math.floor(params.centerY - r));
+  const x1 = Math.min(params.targetCanvas.width - 1, Math.ceil(params.centerX + r));
+  const y1 = Math.min(params.targetCanvas.height - 1, Math.ceil(params.centerY + r));
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  if (bw <= 0 || bh <= 0) return false;
+
+  const img = ctx.getImageData(x0, y0, bw, bh);
+  const changed = dodgeBurnBuffer({
+    data: img.data,
+    width: bw,
+    height: bh,
+    centerX: params.centerX - x0,
+    centerY: params.centerY - y0,
+    radius: params.radius,
+    hardness: params.hardness,
+    strength: params.strength,
+    mode: params.mode,
+    range: params.range,
+    docOffsetX: (params.docOffsetX ?? 0) + x0 * (params.scaleX ?? 1),
+    docOffsetY: (params.docOffsetY ?? 0) + y0 * (params.scaleY ?? 1),
+    scaleX: params.scaleX,
+    scaleY: params.scaleY,
+    selection: params.selection,
+  });
+
+  if (changed) {
+    ctx.putImageData(img, x0, y0);
+  }
+  return changed;
+}
+
+export function blurSharpenBuffer(params: {
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+  radius: number;
+  hardness: number; // 0..1
+  strength: number; // 0..1
+  mode: 'blur' | 'sharpen';
+  docOffsetX?: number;
+  docOffsetY?: number;
+  scaleX?: number;
+  scaleY?: number;
+  selection?: SelectionState | null;
+}): boolean {
+  const {
+    data,
+    width,
+    height,
+    centerX,
+    centerY,
+    radius,
+    hardness,
+    strength,
+    mode,
+    docOffsetX = 0,
+    docOffsetY = 0,
+    scaleX = 1,
+    scaleY = 1,
+    selection = null,
+  } = params;
+
+  const r = Math.max(0.5, radius);
+  const str = Math.max(0, Math.min(1, strength));
+  if (str <= 0 || width < 2 || height < 2) return false;
+
+  const x0 = Math.max(0, Math.floor(centerX - r));
+  const x1 = Math.min(width - 1, Math.ceil(centerX + r));
+  const y0 = Math.max(0, Math.floor(centerY - r));
+  const y1 = Math.min(height - 1, Math.ceil(centerY + r));
+  if (x1 < x0 || y1 < y0) return false;
+
+  const orig = new Uint8ClampedArray(data);
+  const inner = Math.max(0, Math.min(0.98, hardness * 0.85));
+  const sx = scaleX || 1;
+  const sy = scaleY || 1;
+  let modified = false;
+
+  const clampByte = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : Math.round(v));
+
+  for (let py = y0; py <= y1; py++) {
+    for (let px = x0; px <= x1; px++) {
+      const dist = Math.hypot(px - centerX, py - centerY);
+      if (dist > r) continue;
+
+      if (selection) {
+        const docX = docOffsetX + px * sx;
+        const docY = docOffsetY + py * sy;
+        if (!isPointInSelection(docX, docY, selection)) continue;
+      }
+
+      const idx = (py * width + px) * 4;
+      if (orig[idx + 3] === 0 && mode === 'sharpen') continue;
+
+      const dNorm = dist / r;
+      const falloff =
+        hardness >= 0.99 || dNorm <= inner
+          ? 1
+          : 1 - smoothstep01((dNorm - inner) / (1 - inner));
+      const amt = str * falloff;
+      if (amt <= 0) continue;
+
+      let accR = 0;
+      let accG = 0;
+      let accB = 0;
+      let accA = 0;
+      let wSum = 0;
+
+      for (let ky = -1; ky <= 1; ky++) {
+        const ny = Math.max(0, Math.min(height - 1, py + ky));
+        for (let kx = -1; kx <= 1; kx++) {
+          const nx = Math.max(0, Math.min(width - 1, px + kx));
+          const kIdx = (ny * width + nx) * 4;
+          const kw = kx === 0 && ky === 0 ? 4 : kx === 0 || ky === 0 ? 2 : 1;
+          const na = orig[kIdx + 3] / 255;
+          if (mode === 'sharpen' && na <= 0) continue;
+          accR += orig[kIdx] * kw;
+          accG += orig[kIdx + 1] * kw;
+          accB += orig[kIdx + 2] * kw;
+          accA += orig[kIdx + 3] * kw;
+          wSum += kw;
+        }
+      }
+
+      if (wSum <= 0) continue;
+      const avgR = accR / wSum;
+      const avgG = accG / wSum;
+      const avgB = accB / wSum;
+      const avgA = accA / wSum;
+
+      if (mode === 'blur') {
+        const blend = amt * 0.85;
+        data[idx] = clampByte(orig[idx] * (1 - blend) + avgR * blend);
+        data[idx + 1] = clampByte(orig[idx + 1] * (1 - blend) + avgG * blend);
+        data[idx + 2] = clampByte(orig[idx + 2] * (1 - blend) + avgB * blend);
+        data[idx + 3] = clampByte(orig[idx + 3] * (1 - blend) + avgA * blend);
+      } else {
+        const sharpGain = amt * 1.15;
+        data[idx] = clampByte(orig[idx] + (orig[idx] - avgR) * sharpGain);
+        data[idx + 1] = clampByte(orig[idx + 1] + (orig[idx + 1] - avgG) * sharpGain);
+        data[idx + 2] = clampByte(orig[idx + 2] + (orig[idx + 2] - avgB) * sharpGain);
+      }
+      modified = true;
+    }
+  }
+
+  return modified;
+}
+
+export function applyBlurSharpenDab(params: {
+  targetCanvas: HTMLCanvasElement;
+  centerX: number;
+  centerY: number;
+  radius: number;
+  hardness: number;
+  strength: number;
+  mode: 'blur' | 'sharpen';
+  docOffsetX?: number;
+  docOffsetY?: number;
+  scaleX?: number;
+  scaleY?: number;
+  selection?: SelectionState | null;
+}): boolean {
+  const ctx = params.targetCanvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return false;
+
+  const r = Math.max(1, Math.ceil(params.radius)) + 1;
+  const x0 = Math.max(0, Math.floor(params.centerX - r));
+  const y0 = Math.max(0, Math.floor(params.centerY - r));
+  const x1 = Math.min(params.targetCanvas.width - 1, Math.ceil(params.centerX + r));
+  const y1 = Math.min(params.targetCanvas.height - 1, Math.ceil(params.centerY + r));
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  if (bw <= 0 || bh <= 0) return false;
+
+  const img = ctx.getImageData(x0, y0, bw, bh);
+  const changed = blurSharpenBuffer({
+    data: img.data,
+    width: bw,
+    height: bh,
+    centerX: params.centerX - x0,
+    centerY: params.centerY - y0,
+    radius: params.radius,
+    hardness: params.hardness,
+    strength: params.strength,
+    mode: params.mode,
+    docOffsetX: (params.docOffsetX ?? 0) + x0 * (params.scaleX ?? 1),
+    docOffsetY: (params.docOffsetY ?? 0) + y0 * (params.scaleY ?? 1),
+    scaleX: params.scaleX,
+    scaleY: params.scaleY,
+    selection: params.selection,
+  });
+
+  if (changed) {
+    ctx.putImageData(img, x0, y0);
+  }
+  return changed;
+}
+
+export function smudgeBuffer(params: {
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+  prevX: number;
+  prevY: number;
+  currX: number;
+  currY: number;
+  radius: number;
+  hardness: number; // 0..1
+  strength: number; // 0..1
+  docOffsetX?: number;
+  docOffsetY?: number;
+  scaleX?: number;
+  scaleY?: number;
+  selection?: SelectionState | null;
+}): boolean {
+  const {
+    data,
+    width,
+    height,
+    prevX,
+    prevY,
+    currX,
+    currY,
+    radius,
+    hardness,
+    strength,
+    docOffsetX = 0,
+    docOffsetY = 0,
+    scaleX = 1,
+    scaleY = 1,
+    selection = null,
+  } = params;
+
+  const dx = currX - prevX;
+  const dy = currY - prevY;
+  const distMoved = Math.hypot(dx, dy);
+  const str = Math.max(0, Math.min(1, strength));
+  if (distMoved < 0.05 || str <= 0 || width < 1 || height < 1) return false;
+
+  const r = Math.max(0.5, radius);
+  const x0 = Math.max(0, Math.floor(currX - r));
+  const x1 = Math.min(width - 1, Math.ceil(currX + r));
+  const y0 = Math.max(0, Math.floor(currY - r));
+  const y1 = Math.min(height - 1, Math.ceil(currY + r));
+  if (x1 < x0 || y1 < y0) return false;
+
+  // Cap pull step so long jumps smudge smoothly without jumping entirely past local pixels
+  const maxStep = Math.max(1, r * 0.65);
+  const stepScale = distMoved > maxStep ? maxStep / distMoved : 1;
+  const pullX = dx * stepScale;
+  const pullY = dy * stepScale;
+
+  const orig = new Uint8ClampedArray(data);
+  const inner = Math.max(0, Math.min(0.98, hardness * 0.85));
+  const sx = scaleX || 1;
+  const sy = scaleY || 1;
+  let modified = false;
+
+  const sampleBilinear = (fx: number, fy: number): [number, number, number, number] => {
+    const cx = Math.max(0, Math.min(width - 1, fx));
+    const cy = Math.max(0, Math.min(height - 1, fy));
+    const ix0 = Math.floor(cx);
+    const iy0 = Math.floor(cy);
+    const ix1 = Math.min(width - 1, ix0 + 1);
+    const iy1 = Math.min(height - 1, iy0 + 1);
+    const tx = cx - ix0;
+    const ty = cy - iy0;
+
+    const i00 = (iy0 * width + ix0) * 4;
+    const i10 = (iy0 * width + ix1) * 4;
+    const i01 = (iy1 * width + ix0) * 4;
+    const i11 = (iy1 * width + ix1) * 4;
+
+    const w00 = (1 - tx) * (1 - ty);
+    const w10 = tx * (1 - ty);
+    const w01 = (1 - tx) * ty;
+    const w11 = tx * ty;
+
+    return [
+      orig[i00] * w00 + orig[i10] * w10 + orig[i01] * w01 + orig[i11] * w11,
+      orig[i00 + 1] * w00 + orig[i10 + 1] * w10 + orig[i01 + 1] * w01 + orig[i11 + 1] * w11,
+      orig[i00 + 2] * w00 + orig[i10 + 2] * w10 + orig[i01 + 2] * w01 + orig[i11 + 2] * w11,
+      orig[i00 + 3] * w00 + orig[i10 + 3] * w10 + orig[i01 + 3] * w01 + orig[i11 + 3] * w11,
+    ];
+  };
+
+  for (let py = y0; py <= y1; py++) {
+    for (let px = x0; px <= x1; px++) {
+      const dist = Math.hypot(px - currX, py - currY);
+      if (dist > r) continue;
+
+      if (selection) {
+        const docX = docOffsetX + px * sx;
+        const docY = docOffsetY + py * sy;
+        if (!isPointInSelection(docX, docY, selection)) continue;
+      }
+
+      const dNorm = dist / r;
+      const falloff =
+        hardness >= 0.99 || dNorm <= inner
+          ? 1
+          : 1 - smoothstep01((dNorm - inner) / (1 - inner));
+      const amt = str * falloff * 0.85;
+      if (amt <= 0) continue;
+
+      const [sr, sg, sb, sa] = sampleBilinear(px - pullX, py - pullY);
+      const idx = (py * width + px) * 4;
+      const dstA = orig[idx + 3];
+      const outA = dstA * (1 - amt) + sa * amt;
+
+      if (outA <= 0.5) {
+        data[idx + 3] = 0;
+        modified = true;
+        continue;
+      }
+
+      const wDst = dstA * (1 - amt);
+      const wSrc = sa * amt;
+      const denom = wDst + wSrc || 1;
+      data[idx] = Math.round((orig[idx] * wDst + sr * wSrc) / denom);
+      data[idx + 1] = Math.round((orig[idx + 1] * wDst + sg * wSrc) / denom);
+      data[idx + 2] = Math.round((orig[idx + 2] * wDst + sb * wSrc) / denom);
+      data[idx + 3] = Math.round(outA);
+      modified = true;
+    }
+  }
+
+  return modified;
+}
+
+export function applySmudgeDab(params: {
+  targetCanvas: HTMLCanvasElement;
+  prevX: number;
+  prevY: number;
+  currX: number;
+  currY: number;
+  radius: number;
+  hardness: number;
+  strength: number;
+  docOffsetX?: number;
+  docOffsetY?: number;
+  scaleX?: number;
+  scaleY?: number;
+  selection?: SelectionState | null;
+}): boolean {
+  const ctx = params.targetCanvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return false;
+
+  const r = Math.max(1, Math.ceil(params.radius));
+  const pad = Math.ceil(r + Math.min(r * 0.75, Math.hypot(params.currX - params.prevX, params.currY - params.prevY)) + 2);
+  const x0 = Math.max(0, Math.floor(params.currX - pad));
+  const y0 = Math.max(0, Math.floor(params.currY - pad));
+  const x1 = Math.min(params.targetCanvas.width - 1, Math.ceil(params.currX + pad));
+  const y1 = Math.min(params.targetCanvas.height - 1, Math.ceil(params.currY + pad));
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  if (bw <= 0 || bh <= 0) return false;
+
+  const img = ctx.getImageData(x0, y0, bw, bh);
+  const changed = smudgeBuffer({
+    data: img.data,
+    width: bw,
+    height: bh,
+    prevX: params.prevX - x0,
+    prevY: params.prevY - y0,
+    currX: params.currX - x0,
+    currY: params.currY - y0,
+    radius: params.radius,
+    hardness: params.hardness,
+    strength: params.strength,
+    docOffsetX: (params.docOffsetX ?? 0) + x0 * (params.scaleX ?? 1),
+    docOffsetY: (params.docOffsetY ?? 0) + y0 * (params.scaleY ?? 1),
+    scaleX: params.scaleX,
+    scaleY: params.scaleY,
+    selection: params.selection,
+  });
+
+  if (changed) {
+    ctx.putImageData(img, x0, y0);
+  }
+  return changed;
+}
+
 export function snapshotLayers(layers: Layer[]): HistoryLayerSnapshot[] {
   return layers.map((layer) => {
     const maskSnap = layer.mask
@@ -2398,6 +3486,7 @@ export function snapshotLayers(layers: Layer[]): HistoryLayerSnapshot[] {
       strokeEnabled,
       strokeWidth,
       cornerRadius,
+      sides,
       mask,
       effects: _effects,
       ...base
@@ -2412,6 +3501,7 @@ export function snapshotLayers(layers: Layer[]): HistoryLayerSnapshot[] {
         strokeEnabled,
         strokeWidth,
         cornerRadius,
+        ...(sides !== undefined ? { sides } : {}),
       },
       ...maskSnap,
     };
@@ -3073,3 +4163,734 @@ export function fillCanvasWithSelectionMask(params: {
   }
   return changed;
 }
+
+export function computeCanvasAnchorOffset(
+  oldWidth: number,
+  oldHeight: number,
+  newWidth: number,
+  newHeight: number,
+  anchor: CanvasAnchor
+): { dx: number; dy: number } {
+  const dw = newWidth - oldWidth;
+  const dh = newHeight - oldHeight;
+  const col = anchor.endsWith('w') ? 0 : anchor.endsWith('e') ? 2 : 1;
+  const row = anchor.startsWith('n') ? 0 : anchor.startsWith('s') ? 2 : 1;
+  return {
+    dx: Math.round((dw * col) / 2),
+    dy: Math.round((dh * row) / 2),
+  };
+}
+
+export function canvasSizeLayers(
+  layers: Layer[],
+  oldWidth: number,
+  oldHeight: number,
+  newWidth: number,
+  newHeight: number,
+  anchor: CanvasAnchor
+): Layer[] {
+  const nw = Math.max(1, Math.round(newWidth));
+  const nh = Math.max(1, Math.round(newHeight));
+  const { dx, dy } = computeCanvasAnchorOffset(oldWidth, oldHeight, nw, nh, anchor);
+
+  return layers.map((layer) => {
+    let nextMask: LayerMask | null = layer.mask ?? null;
+    if (layer.mask) {
+      const mCanvas = createWhiteMaskCanvas(nw, nh);
+      const mctx = mCanvas.getContext('2d');
+      if (mctx) {
+        mctx.drawImage(layer.mask.canvas, dx, dy);
+      }
+      nextMask = {
+        canvas: mCanvas,
+        enabled: layer.mask.enabled,
+        inverted: layer.mask.inverted,
+      };
+    }
+
+    if (layer.type === 'group' || layer.type === 'adjustment') {
+      return {
+        ...layer,
+        width: nw,
+        height: nh,
+        mask: nextMask,
+      };
+    }
+
+    return {
+      ...layer,
+      x: layer.x + dx,
+      y: layer.y + dy,
+      mask: nextMask,
+      ...(layer.type === 'raster' ? { canvas: cloneCanvas(layer.canvas) } : {}),
+    };
+  });
+}
+
+export function computeAlphaBoundsFromRgba(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number
+): CropRect | null {
+  if (width <= 0 || height <= 0) return null;
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      if (data[(row + x) * 4 + 3] > 0) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  if (maxX < minX || maxY < minY) return null;
+  const trimW = maxX - minX + 1;
+  const trimH = maxY - minY + 1;
+  if (minX === 0 && minY === 0 && trimW === width && trimH === height) {
+    return null;
+  }
+  return { x: minX, y: minY, width: trimW, height: trimH };
+}
+
+export function computeTrimTransparentBounds(
+  width: number,
+  height: number,
+  backgroundColor: string,
+  layers: Layer[],
+  adjustments?: Adjustments
+): CropRect | null {
+  if (width <= 0 || height <= 0) return null;
+  const flat = compositeLayersToCanvas(width, height, backgroundColor, layers, adjustments);
+  const ctx = flat.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  const data = ctx.getImageData(0, 0, width, height).data;
+  return computeAlphaBoundsFromRgba(data, width, height);
+}
+
+export function strokeBufferWithSelectionMask(params: {
+  targetData: Uint8ClampedArray;
+  targetWidth: number;
+  targetHeight: number;
+  strokeRgba: [number, number, number, number];
+  strokeWidthPx: number;
+  maskData: Uint8Array | null;
+  maskWidth: number;
+  maskHeight: number;
+  offsetX?: number;
+  offsetY?: number;
+  scaleX?: number;
+  scaleY?: number;
+}): boolean {
+  const {
+    targetData,
+    targetWidth,
+    targetHeight,
+    strokeRgba,
+    strokeWidthPx,
+    maskData,
+    maskWidth,
+    maskHeight,
+    offsetX = 0,
+    offsetY = 0,
+    scaleX = 1,
+    scaleY = 1,
+  } = params;
+
+  const [sr, sg, sb, sa] = strokeRgba;
+  const strokeOpacity = sa / 255;
+  const thickness = Math.max(1, Math.min(48, Math.round(strokeWidthPx)));
+  if (strokeOpacity <= 0 || targetWidth <= 0 || targetHeight <= 0) return false;
+
+  const sx = scaleX || 1;
+  const sy = scaleY || 1;
+  let modified = false;
+
+  if (!maskData) {
+    for (let py = 0; py < targetHeight; py++) {
+      for (let px = 0; px < targetWidth; px++) {
+        if (
+          px >= thickness &&
+          py >= thickness &&
+          px < targetWidth - thickness &&
+          py < targetHeight - thickness
+        ) {
+          continue;
+        }
+        const idx = (py * targetWidth + px) * 4;
+        const dstA = targetData[idx + 3] / 255;
+        const outA = strokeOpacity + dstA * (1 - strokeOpacity);
+        if (outA <= 0) continue;
+        const inv = 1 / outA;
+        targetData[idx] = Math.round((sr * strokeOpacity + targetData[idx] * dstA * (1 - strokeOpacity)) * inv);
+        targetData[idx + 1] = Math.round((sg * strokeOpacity + targetData[idx + 1] * dstA * (1 - strokeOpacity)) * inv);
+        targetData[idx + 2] = Math.round((sb * strokeOpacity + targetData[idx + 2] * dstA * (1 - strokeOpacity)) * inv);
+        targetData[idx + 3] = Math.round(outA * 255);
+        modified = true;
+      }
+    }
+    return modified;
+  }
+
+  const rSq = thickness * thickness;
+  for (let py = 0; py < targetHeight; py++) {
+    const docY = Math.floor(offsetY + py * sy);
+    if (docY < 0 || docY >= maskHeight) continue;
+    for (let px = 0; px < targetWidth; px++) {
+      const docX = Math.floor(offsetX + px * sx);
+      if (docX < 0 || docX >= maskWidth) continue;
+      const mVal = maskData[docY * maskWidth + docX];
+      if (mVal === 0) continue;
+
+      let nearEdge = false;
+      for (let ky = -thickness; ky <= thickness && !nearEdge; ky++) {
+        const ny = docY + ky;
+        const ky2 = ky * ky;
+        for (let kx = -thickness; kx <= thickness; kx++) {
+          if (kx * kx + ky2 > rSq) continue;
+          const nx = docX + kx;
+          if (nx < 0 || ny < 0 || nx >= maskWidth || ny >= maskHeight) {
+            nearEdge = true;
+            break;
+          }
+          if (maskData[ny * maskWidth + nx] === 0) {
+            nearEdge = true;
+            break;
+          }
+        }
+      }
+      if (!nearEdge) continue;
+
+      const effA = strokeOpacity * (mVal / 255);
+      const idx = (py * targetWidth + px) * 4;
+      const dstA = targetData[idx + 3] / 255;
+      const outA = effA + dstA * (1 - effA);
+      if (outA <= 0) continue;
+      const inv = 1 / outA;
+      targetData[idx] = Math.round((sr * effA + targetData[idx] * dstA * (1 - effA)) * inv);
+      targetData[idx + 1] = Math.round((sg * effA + targetData[idx + 1] * dstA * (1 - effA)) * inv);
+      targetData[idx + 2] = Math.round((sb * effA + targetData[idx + 2] * dstA * (1 - effA)) * inv);
+      targetData[idx + 3] = Math.round(outA * 255);
+      modified = true;
+    }
+  }
+  return modified;
+}
+
+export function strokeCanvasWithSelectionMask(params: {
+  targetCanvas: HTMLCanvasElement;
+  strokeHex: string;
+  strokeWidthPx: number;
+  opacityPercent: number;
+  maskData: Uint8Array | null;
+  docWidth: number;
+  docHeight: number;
+  offsetX: number;
+  offsetY: number;
+  scaleX: number;
+  scaleY: number;
+}): boolean {
+  const ctx = params.targetCanvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return false;
+  const w = params.targetCanvas.width;
+  const h = params.targetCanvas.height;
+  const img = ctx.getImageData(0, 0, w, h);
+  const alpha = Math.round(Math.max(0, Math.min(100, params.opacityPercent)) * 2.55);
+  const rgba = hexToRgba(params.strokeHex, alpha);
+  const changed = strokeBufferWithSelectionMask({
+    targetData: img.data,
+    targetWidth: w,
+    targetHeight: h,
+    strokeRgba: rgba,
+    strokeWidthPx: params.strokeWidthPx,
+    maskData: params.maskData,
+    maskWidth: params.docWidth,
+    maskHeight: params.docHeight,
+    offsetX: params.offsetX,
+    offsetY: params.offsetY,
+    scaleX: params.scaleX,
+    scaleY: params.scaleY,
+  });
+  if (changed) {
+    ctx.putImageData(img, 0, 0);
+  }
+  return changed;
+}
+
+function rgbToHslUnit(r: number, g: number, b: number): [number, number, number] {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const l = (max + min) * 0.5;
+  const d = max - min;
+  if (d < 1e-6) return [0, 0, l];
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h = 0;
+  if (max === rn) h = (gn - bn) / d + (gn < bn ? 6 : 0);
+  else if (max === gn) h = (bn - rn) / d + 2;
+  else h = (rn - gn) / d + 4;
+  return [h / 6, s, l];
+}
+
+function hslUnitToRgb(h: number, s: number, l: number): [number, number, number] {
+  if (s <= 1e-6) {
+    const v = Math.round(l * 255);
+    return [v, v, v];
+  }
+  const hue2rgb = (p: number, q: number, t: number): number => {
+    let tt = t;
+    if (tt < 0) tt += 1;
+    if (tt > 1) tt -= 1;
+    if (tt < 1 / 6) return p + (q - p) * 6 * tt;
+    if (tt < 1 / 2) return q;
+    if (tt < 2 / 3) return p + (q - p) * (2 / 3 - tt) * 6;
+    return p;
+  };
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  return [
+    Math.round(hue2rgb(p, q, h + 1 / 3) * 255),
+    Math.round(hue2rgb(p, q, h) * 255),
+    Math.round(hue2rgb(p, q, h - 1 / 3) * 255),
+  ];
+}
+
+export function colorReplaceBuffer(params: {
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+  radius: number;
+  hardness: number; // 0..1
+  opacity: number; // 0..1
+  targetRgba: [number, number, number, number];
+}): boolean {
+  const { data, width, height, centerX, centerY, radius, hardness, opacity, targetRgba } = params;
+  const r = Math.max(0.5, radius);
+  const op = Math.max(0, Math.min(1, opacity));
+  if (op <= 0) return false;
+
+  const [fh, fs] = rgbToHslUnit(targetRgba[0], targetRgba[1], targetRgba[2]);
+  const x0 = Math.max(0, Math.floor(centerX - r));
+  const x1 = Math.min(width - 1, Math.ceil(centerX + r));
+  const y0 = Math.max(0, Math.floor(centerY - r));
+  const y1 = Math.min(height - 1, Math.ceil(centerY + r));
+  if (x1 < x0 || y1 < y0) return false;
+
+  const inner = Math.max(0, Math.min(0.98, hardness * 0.85));
+  let modified = false;
+
+  for (let py = y0; py <= y1; py++) {
+    for (let px = x0; px <= x1; px++) {
+      const dist = Math.hypot(px - centerX, py - centerY);
+      if (dist > r) continue;
+      const idx = (py * width + px) * 4;
+      if (data[idx + 3] === 0) continue;
+
+      const dNorm = dist / r;
+      const falloff =
+        hardness >= 0.99 || dNorm <= inner
+          ? 1
+          : 1 - smoothstep01((dNorm - inner) / (1 - inner));
+      const w = falloff * op;
+      if (w <= 0) continue;
+
+      const [, , lum] = rgbToHslUnit(data[idx], data[idx + 1], data[idx + 2]);
+      const [nr, ng, nb] = hslUnitToRgb(fh, fs, lum);
+      data[idx] = Math.round(data[idx] * (1 - w) + nr * w);
+      data[idx + 1] = Math.round(data[idx + 1] * (1 - w) + ng * w);
+      data[idx + 2] = Math.round(data[idx + 2] * (1 - w) + nb * w);
+      modified = true;
+    }
+  }
+  return modified;
+}
+
+export function paintColorReplaceDab(params: {
+  targetCanvas: HTMLCanvasElement;
+  centerX: number;
+  centerY: number;
+  radius: number;
+  hardness: number; // 0..1
+  opacity: number; // 0..1
+  hex: string;
+}): boolean {
+  const ctx = params.targetCanvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return false;
+  const r = Math.max(1, Math.ceil(params.radius));
+  const x0 = Math.max(0, Math.floor(params.centerX - r));
+  const y0 = Math.max(0, Math.floor(params.centerY - r));
+  const x1 = Math.min(params.targetCanvas.width - 1, Math.ceil(params.centerX + r));
+  const y1 = Math.min(params.targetCanvas.height - 1, Math.ceil(params.centerY + r));
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  if (bw <= 0 || bh <= 0) return false;
+
+  const img = ctx.getImageData(x0, y0, bw, bh);
+  const changed = colorReplaceBuffer({
+    data: img.data,
+    width: bw,
+    height: bh,
+    centerX: params.centerX - x0,
+    centerY: params.centerY - y0,
+    radius: params.radius,
+    hardness: params.hardness,
+    opacity: params.opacity,
+    targetRgba: hexToRgba(params.hex, 255),
+  });
+  if (changed) {
+    ctx.putImageData(img, x0, y0);
+  }
+  return changed;
+}
+
+export function redEyeRemovalBuffer(params: {
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+  radius: number;
+  hardness: number; // 0..1
+  docOffsetX?: number;
+  docOffsetY?: number;
+  scaleX?: number;
+  scaleY?: number;
+  selection?: SelectionState | null;
+}): boolean {
+  const {
+    data,
+    width,
+    height,
+    centerX,
+    centerY,
+    radius,
+    hardness,
+    docOffsetX = 0,
+    docOffsetY = 0,
+    scaleX = 1,
+    scaleY = 1,
+    selection = null,
+  } = params;
+
+  const r = Math.max(0.5, radius);
+  const x0 = Math.max(0, Math.floor(centerX - r));
+  const x1 = Math.min(width - 1, Math.ceil(centerX + r));
+  const y0 = Math.max(0, Math.floor(centerY - r));
+  const y1 = Math.min(height - 1, Math.ceil(centerY + r));
+  if (x1 < x0 || y1 < y0) return false;
+
+  const inner = Math.max(0, Math.min(0.98, hardness * 0.85));
+  const sx = scaleX || 1;
+  const sy = scaleY || 1;
+  let modified = false;
+
+  for (let py = y0; py <= y1; py++) {
+    for (let px = x0; px <= x1; px++) {
+      const dist = Math.hypot(px - centerX, py - centerY);
+      if (dist > r) continue;
+      if (selection) {
+        if (!isPointInSelection(docOffsetX + px * sx, docOffsetY + py * sy, selection)) continue;
+      }
+
+      const idx = (py * width + px) * 4;
+      if (data[idx + 3] === 0) continue;
+
+      const pr = data[idx];
+      const pg = data[idx + 1];
+      const pb = data[idx + 2];
+      // Preserve specular eye catchlights
+      if (pg > 185 && pb > 185) continue;
+
+      const maxGB = Math.max(pg, pb);
+      const redExcess = pr - maxGB;
+      if (pr < 55 || redExcess < 22 || pr < maxGB * 1.35) continue;
+
+      const dNorm = dist / r;
+      const falloff =
+        hardness >= 0.99 || dNorm <= inner
+          ? 1
+          : 1 - smoothstep01((dNorm - inner) / (1 - inner));
+      const rednessRatio = Math.min(1, (pr / Math.max(1, maxGB) - 1.25) / 1.15);
+      const strength = Math.max(0, Math.min(1, falloff * rednessRatio));
+      if (strength <= 0) continue;
+
+      const neutralPupil = Math.round(Math.min(pg, pb) * 0.82);
+      data[idx] = Math.round(pr * (1 - strength) + neutralPupil * strength);
+      data[idx + 1] = Math.round(pg * (1 - strength * 0.35) + neutralPupil * (strength * 0.35));
+      data[idx + 2] = Math.round(pb * (1 - strength * 0.35) + neutralPupil * (strength * 0.35));
+      modified = true;
+    }
+  }
+  return modified;
+}
+
+export function applyRedEyeRemovalDab(params: {
+  targetCanvas: HTMLCanvasElement;
+  centerX: number;
+  centerY: number;
+  radius: number;
+  hardness: number;
+  docOffsetX?: number;
+  docOffsetY?: number;
+  scaleX?: number;
+  scaleY?: number;
+  selection?: SelectionState | null;
+}): boolean {
+  const ctx = params.targetCanvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return false;
+  const r = Math.max(1, Math.ceil(params.radius));
+  const x0 = Math.max(0, Math.floor(params.centerX - r));
+  const y0 = Math.max(0, Math.floor(params.centerY - r));
+  const x1 = Math.min(params.targetCanvas.width - 1, Math.ceil(params.centerX + r));
+  const y1 = Math.min(params.targetCanvas.height - 1, Math.ceil(params.centerY + r));
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  if (bw <= 0 || bh <= 0) return false;
+
+  const img = ctx.getImageData(x0, y0, bw, bh);
+  const changed = redEyeRemovalBuffer({
+    data: img.data,
+    width: bw,
+    height: bh,
+    centerX: params.centerX - x0,
+    centerY: params.centerY - y0,
+    radius: params.radius,
+    hardness: params.hardness,
+    docOffsetX: (params.docOffsetX ?? 0) + x0 * (params.scaleX ?? 1),
+    docOffsetY: (params.docOffsetY ?? 0) + y0 * (params.scaleY ?? 1),
+    scaleX: params.scaleX,
+    scaleY: params.scaleY,
+    selection: params.selection,
+  });
+  if (changed) {
+    ctx.putImageData(img, x0, y0);
+  }
+  return changed;
+}
+
+export function sampleAverageColorFromCanvas(
+  canvas: HTMLCanvasElement,
+  docX: number,
+  docY: number,
+  sampleSize: 1 | 3 | 5
+): string | null {
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  const half = sampleSize === 1 ? 0 : sampleSize === 3 ? 1 : 2;
+  const cx = Math.max(0, Math.min(canvas.width - 1, Math.floor(docX)));
+  const cy = Math.max(0, Math.min(canvas.height - 1, Math.floor(docY)));
+  const x0 = Math.max(0, cx - half);
+  const y0 = Math.max(0, cy - half);
+  const x1 = Math.min(canvas.width - 1, cx + half);
+  const y1 = Math.min(canvas.height - 1, cy + half);
+  const bw = x1 - x0 + 1;
+  const bh = y1 - y0 + 1;
+  const data = ctx.getImageData(x0, y0, bw, bh).data;
+  let sr = 0;
+  let sg = 0;
+  let sb = 0;
+  let count = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] === 0 && sampleSize > 1) continue;
+    sr += data[i];
+    sg += data[i + 1];
+    sb += data[i + 2];
+    count++;
+  }
+  if (count === 0) {
+    const px = ctx.getImageData(cx, cy, 1, 1).data;
+    return rgbaToHex(px[0], px[1], px[2]);
+  }
+  return rgbaToHex(sr / count, sg / count, sb / count);
+}
+
+/**
+ * Solves 3x3 projective homography H mapping `srcPts` (4 points) to `dstPts` (4 points).
+ * Returns row-major 9-element matrix [h0..h7, 1] or null if degenerate.
+ */
+export function solveHomography(
+  srcPts: ReadonlyArray<{ x: number; y: number }>,
+  dstPts: ReadonlyArray<{ x: number; y: number }>
+): Float64Array | null {
+  if (srcPts.length < 4 || dstPts.length < 4) return null;
+  const A: number[][] = [];
+  const b: number[] = [];
+  for (let i = 0; i < 4; i++) {
+    const { x, y } = srcPts[i];
+    const { x: u, y: v } = dstPts[i];
+    A.push([x, y, 1, 0, 0, 0, -u * x, -u * y]);
+    b.push(u);
+    A.push([0, 0, 0, x, y, 1, -v * x, -v * y]);
+    b.push(v);
+  }
+
+  const n = 8;
+  for (let col = 0; col < n; col++) {
+    let pivotRow = col;
+    let maxAbs = Math.abs(A[col][col]);
+    for (let r = col + 1; r < n; r++) {
+      const val = Math.abs(A[r][col]);
+      if (val > maxAbs) {
+        maxAbs = val;
+        pivotRow = r;
+      }
+    }
+    if (maxAbs < 1e-10) return null;
+    if (pivotRow !== col) {
+      [A[col], A[pivotRow]] = [A[pivotRow], A[col]];
+      [b[col], b[pivotRow]] = [b[pivotRow], b[col]];
+    }
+    const pivot = A[col][col];
+    for (let r = col + 1; r < n; r++) {
+      const factor = A[r][col] / pivot;
+      if (factor === 0) continue;
+      for (let c = col; c < n; c++) {
+        A[r][c] -= factor * A[col][c];
+      }
+      b[r] -= factor * b[col];
+    }
+  }
+
+  const h = new Float64Array(9);
+  for (let r = n - 1; r >= 0; r--) {
+    let sum = b[r];
+    for (let c = r + 1; c < n; c++) {
+      sum -= A[r][c] * h[c];
+    }
+    h[r] = sum / A[r][r];
+  }
+  h[8] = 1;
+  return h;
+}
+
+/**
+ * Inverse-maps destination pixels through projective homography into `srcData`
+ * using bilinear interpolation. `dstCorners` order: [TL, TR, BR, BL] in pixel space.
+ */
+export function warpBufferPerspective(
+  srcData: Uint8ClampedArray,
+  width: number,
+  height: number,
+  dstCorners: ReadonlyArray<{ x: number; y: number }>
+): Uint8ClampedArray {
+  const out = new Uint8ClampedArray(srcData.length);
+  if (width <= 1 || height <= 1 || dstCorners.length < 4) return new Uint8ClampedArray(srcData);
+
+  const srcCorners = [
+    { x: 0, y: 0 },
+    { x: width - 1, y: 0 },
+    { x: width - 1, y: height - 1 },
+    { x: 0, y: height - 1 },
+  ];
+  // Compute inverse homography directly: dst -> src
+  const invH = solveHomography(dstCorners, srcCorners);
+  if (!invH) return new Uint8ClampedArray(srcData);
+
+  const h0 = invH[0], h1 = invH[1], h2 = invH[2];
+  const h3 = invH[3], h4 = invH[4], h5 = invH[5];
+  const h6 = invH[6], h7 = invH[7], h8 = invH[8];
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const denom = h6 * x + h7 * y + h8;
+      if (Math.abs(denom) < 1e-8) continue;
+      const sxRaw = (h0 * x + h1 * y + h2) / denom;
+      const syRaw = (h3 * x + h4 * y + h5) / denom;
+      const EPS = 1e-4;
+      if (sxRaw < -EPS || syRaw < -EPS || sxRaw > width - 1 + EPS || syRaw > height - 1 + EPS) {
+        continue;
+      }
+      const sx = Math.max(0, Math.min(width - 1, sxRaw));
+      const sy = Math.max(0, Math.min(height - 1, syRaw));
+
+      const x0 = Math.floor(sx);
+      const y0 = Math.floor(sy);
+      const x1 = Math.min(width - 1, x0 + 1);
+      const y1 = Math.min(height - 1, y0 + 1);
+      const tx = sx - x0;
+      const ty = sy - y0;
+      const i00 = (y0 * width + x0) * 4;
+      const i10 = (y0 * width + x1) * 4;
+      const i01 = (y1 * width + x0) * 4;
+      const i11 = (y1 * width + x1) * 4;
+      const outIdx = (y * width + x) * 4;
+
+      const w00 = (1 - tx) * (1 - ty);
+      const w10 = tx * (1 - ty);
+      const w01 = (1 - tx) * ty;
+      const w11 = tx * ty;
+
+      out[outIdx] = Math.round(
+        srcData[i00] * w00 + srcData[i10] * w10 + srcData[i01] * w01 + srcData[i11] * w11
+      );
+      out[outIdx + 1] = Math.round(
+        srcData[i00 + 1] * w00 + srcData[i10 + 1] * w10 + srcData[i01 + 1] * w01 + srcData[i11 + 1] * w11
+      );
+      out[outIdx + 2] = Math.round(
+        srcData[i00 + 2] * w00 + srcData[i10 + 2] * w10 + srcData[i01 + 2] * w01 + srcData[i11 + 2] * w11
+      );
+      out[outIdx + 3] = Math.round(
+        srcData[i00 + 3] * w00 + srcData[i10 + 3] * w10 + srcData[i01 + 3] * w01 + srcData[i11 + 3] * w11
+      );
+    }
+  }
+  return out;
+}
+
+export function warpCanvasPerspective(
+  canvas: HTMLCanvasElement,
+  dstCorners: ReadonlyArray<{ x: number; y: number }>
+): HTMLCanvasElement {
+  const w = canvas.width;
+  const h = canvas.height;
+  const outCanvas = createCanvas(w, h);
+  const srcCtx = canvas.getContext('2d', { willReadFrequently: true });
+  const dstCtx = outCanvas.getContext('2d');
+  if (!srcCtx || !dstCtx) return outCanvas;
+  const srcImg = srcCtx.getImageData(0, 0, w, h);
+  const warped = warpBufferPerspective(srcImg.data, w, h, dstCorners);
+  dstCtx.putImageData(new ImageData(new Uint8ClampedArray(warped), w, h), 0, 0);
+  return outCanvas;
+}
+
+export function applyPixelFilterToCanvas(params: {
+  targetCanvas: HTMLCanvasElement;
+  transform: (data: Uint8ClampedArray, width: number, height: number) => Uint8ClampedArray;
+  selection: SelectionState | null;
+  offsetX: number;
+  offsetY: number;
+  scaleX: number;
+  scaleY: number;
+}): boolean {
+  const ctx = params.targetCanvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return false;
+  const w = params.targetCanvas.width;
+  const h = params.targetCanvas.height;
+  const beforeCanvas = params.selection ? cloneCanvas(params.targetCanvas) : null;
+  const img = ctx.getImageData(0, 0, w, h);
+  const nextData = params.transform(img.data, w, h);
+  ctx.putImageData(new ImageData(new Uint8ClampedArray(nextData), w, h), 0, 0);
+  if (params.selection && beforeCanvas) {
+    maskCanvasDiffBySelection(
+      params.targetCanvas,
+      beforeCanvas,
+      params.selection,
+      params.offsetX,
+      params.offsetY,
+      params.scaleX,
+      params.scaleY
+    );
+  }
+  return true;
+}
+
+

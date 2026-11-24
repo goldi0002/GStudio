@@ -6,14 +6,28 @@ import {
   buildSplineCurveLut,
   cloneAdjustments,
   computeHistogram,
+  computeHistogramChannelStats,
+  createDefaultHslMixer,
   DEFAULT_ADJUSTMENTS,
   DEFAULT_CURVES,
   DEFAULT_FILTERS,
+  DEFAULT_GRADIENT_MAP,
   DEFAULT_LEVELS,
   getTargetAdjustments,
   isDefaultAdjustments,
+  isDefaultFilters,
   withTargetAdjustments,
 } from './adjustments';
+import {
+  applyEdgeDetectBuffer,
+  applyEmbossBuffer,
+  applyHalftoneBuffer,
+  applyHighPassBuffer,
+  applyMotionBlurBuffer,
+  applyOilPaintBuffer,
+  autoContrastBuffer,
+  autoLevelsBuffer,
+} from './filters';
 import {
   deletePreset,
   loadPresets,
@@ -37,15 +51,23 @@ import type { DocumentState } from '../types/editor';
 import { encodeBMP } from './bmpEncoder';
 import { cropRatioFor, fitRatioRect, parseRatio } from './cropRatio';
 import {
+  blurSharpenBuffer,
+  canvasSizeLayers,
   cloneLayerEffects,
   cloneStampBuffer,
+  colorReplaceBuffer,
+  computeAlphaBoundsFromRgba,
+  computeCanvasAnchorOffset,
   computeLayerResizeRect,
   computePolygonBounds,
   computeShadowOffset,
+  computeShapePathPoints,
+  cropAndStraightenLayers,
   cropLayers,
   computeSnapGuides,
   DEFAULT_LAYER_EFFECTS,
   docPointToLayerLocal,
+  dodgeBurnBuffer,
   extractMagicWandMask,
   hashPixels,
   extractSelectionFromBuffer,
@@ -59,13 +81,19 @@ import {
   isPointInSelection,
   pickTopmostLayerAtPoint,
   rasterizeSelectionToMaskBuffer,
+  redEyeRemovalBuffer,
   rgbaToHex,
   restoreLayersFromSnapshot,
   rotatePointAroundCenter,
+  scaleAdjustmentsForSample,
+  smudgeBuffer,
   snapRotationAngle,
   snapshotLayers,
+  solveHomography,
   spotHealBuffer,
+  strokeBufferWithSelectionMask,
   traceSelectionBoundarySegments,
+  warpBufferPerspective,
 } from './canvasOps';
 import type { AdjustmentLayer, GroupLayer, Layer, RasterLayer, ShapeLayer } from '../types/editor';
 
@@ -1165,6 +1193,797 @@ function revisionDoc(id: string, updatedAt: number, dirty: boolean): DocumentSta
   );
 
   resetPersistedRevisions();
+}
+
+// ---- New Color Adjustments & Filters (vibrance, clarity, fade, invert, bloom, posterize) ----
+{
+  // Vibrance boosts muted tones much more than already saturated colors
+  const src = new Uint8ClampedArray([
+    150, 120, 120, 255, // muted warm gray
+    230, 30, 30, 255, // already highly saturated red
+  ]);
+  const out = applyAdjustmentsToBuffer(src, 2, 1, {
+    ...cloneAdjustments(DEFAULT_ADJUSTMENTS),
+    vibrance: 80,
+  });
+  const mutedSpreadBefore = src[0] - src[1];
+  const mutedSpreadAfter = out[0] - out[1];
+  const satGainRatio = (out[0] - out[1] - (src[0] - src[1])) / Math.max(1, src[0] - src[1]);
+  assert.ok(
+    mutedSpreadAfter > mutedSpreadBefore,
+    'Positive vibrance increases separation on muted tones'
+  );
+  assert.ok(satGainRatio > 0.1, 'Muted tone gets noticeable boost from vibrance');
+  assert.ok(out[4] >= 220 && out[5] <= 40, 'Already saturated red stays protected');
+
+  // Invert flips RGB and preserves alpha
+  const invOut = applyAdjustmentsToBuffer(
+    new Uint8ClampedArray([10, 100, 245, 180]),
+    1,
+    1,
+    { ...cloneAdjustments(DEFAULT_ADJUSTMENTS), invert: true }
+  );
+  assert.deepEqual(Array.from(invOut), [245, 155, 10, 180], 'Invert flips RGB channels and keeps alpha');
+
+  // Matte Fade lifts blacks without clipping whites
+  const fadeOut = applyAdjustmentsToBuffer(
+    new Uint8ClampedArray([0, 0, 0, 255, 255, 255, 255, 255]),
+    2,
+    1,
+    { ...cloneAdjustments(DEFAULT_ADJUSTMENTS), fade: 60 }
+  );
+  assert.ok(fadeOut[0] > 20 && fadeOut[0] < 120, 'Matte fade lifts pure black');
+  assert.equal(fadeOut[4], 255, 'Matte fade preserves white point');
+
+  // Clarity enhances local midtone contrast relative to dark neighbors
+  const w = 16;
+  const h = 16;
+  const grid = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = (y * w + x) * 4;
+      const v = x >= 6 && x <= 9 && y >= 6 && y <= 9 ? 150 : 90;
+      grid[idx] = v;
+      grid[idx + 1] = v;
+      grid[idx + 2] = v;
+      grid[idx + 3] = 255;
+    }
+  }
+  const clarityOut = applyAdjustmentsToBuffer(grid, w, h, {
+    ...cloneAdjustments(DEFAULT_ADJUSTMENTS),
+    clarity: 80,
+  });
+  const centerIdx = (7 * w + 7) * 4;
+  const outerIdx = (1 * w + 1) * 4;
+  assert.ok(
+    clarityOut[centerIdx] > 150 && clarityOut[outerIdx] <= 90,
+    'Positive clarity increases local midtone separation'
+  );
+
+  // Posterize quantizes channels cleanly
+  const grad = new Uint8ClampedArray([20, 90, 175, 255, 240, 128, 60, 255]);
+  const postOut = applyAdjustmentsToBuffer(grad, 2, 1, {
+    ...cloneAdjustments(DEFAULT_ADJUSTMENTS),
+    filters: { ...DEFAULT_FILTERS, posterize: 2 },
+  });
+  for (const ch of [postOut[0], postOut[1], postOut[2], postOut[4], postOut[5], postOut[6]]) {
+    assert.ok(ch === 0 || ch === 255, `2-level posterize maps to 0 or 255, got ${ch}`);
+  }
+
+  // Highlight Bloom spills warm glow from bright pixels onto dark neighbors
+  const bloomSrc = new Uint8ClampedArray(9 * 9 * 4);
+  for (let i = 0; i < 81; i++) {
+    bloomSrc[i * 4 + 3] = 255;
+  }
+  const bCenter = (4 * 9 + 4) * 4;
+  bloomSrc[bCenter] = 255;
+  bloomSrc[bCenter + 1] = 255;
+  bloomSrc[bCenter + 2] = 255;
+  const bloomOut = applyAdjustmentsToBuffer(bloomSrc, 9, 9, {
+    ...cloneAdjustments(DEFAULT_ADJUSTMENTS),
+    filters: { ...DEFAULT_FILTERS, bloom: 90 },
+  });
+  const bNeighbor = (4 * 9 + 5) * 4;
+  assert.ok(bloomOut[bNeighbor] > 0, 'Highlight bloom radiates glow onto dark neighbor pixels');
+}
+
+// Presets: sanitizeAdjustments clamps new fields
+{
+  const sanitized = sanitizeAdjustments({
+    vibrance: 200,
+    clarity: -200,
+    fade: 150,
+    invert: true,
+    filters: { bloom: 999, posterize: 1 },
+  });
+  assert.equal(sanitized.vibrance, 100);
+  assert.equal(sanitized.clarity, -100);
+  assert.equal(sanitized.fade, 100);
+  assert.equal(sanitized.invert, true);
+  assert.equal(sanitized.filters?.bloom, 100);
+  assert.equal(sanitized.filters?.posterize, 0, 'Posterize < 2 resets to 0 (Off)');
+}
+
+// ---- Dodge / Burn / Sponge, Blur / Sharpen, and Smudge buffer engines ----
+{
+  // Dodge & Burn
+  const base = new Uint8ClampedArray(5 * 5 * 4);
+  for (let i = 0; i < 25; i++) {
+    base[i * 4] = 120;
+    base[i * 4 + 1] = 80;
+    base[i * 4 + 2] = 80;
+    base[i * 4 + 3] = 255;
+  }
+  const dodged = new Uint8ClampedArray(base);
+  const didDodge = dodgeBurnBuffer({
+    data: dodged,
+    width: 5,
+    height: 5,
+    centerX: 2,
+    centerY: 2,
+    radius: 2,
+    hardness: 1,
+    strength: 0.8,
+    mode: 'dodge',
+    range: 'midtones',
+  });
+  assert.equal(didDodge, true);
+  const cIdx = (2 * 5 + 2) * 4;
+  assert.ok(dodged[cIdx] > 120, 'Dodge lightens targeted pixels');
+  assert.equal(dodged[0], 120, 'Corner outside radius remains untouched');
+
+  const burned = new Uint8ClampedArray(base);
+  dodgeBurnBuffer({
+    data: burned,
+    width: 5,
+    height: 5,
+    centerX: 2,
+    centerY: 2,
+    radius: 2,
+    hardness: 1,
+    strength: 0.8,
+    mode: 'burn',
+    range: 'midtones',
+  });
+  assert.ok(burned[cIdx] < 120, 'Burn darkens targeted pixels');
+
+  const desat = new Uint8ClampedArray(base);
+  dodgeBurnBuffer({
+    data: desat,
+    width: 5,
+    height: 5,
+    centerX: 2,
+    centerY: 2,
+    radius: 2,
+    hardness: 1,
+    strength: 0.9,
+    mode: 'desaturate',
+    range: 'midtones',
+  });
+  assert.ok(
+    desat[cIdx] - desat[cIdx + 1] < base[cIdx] - base[cIdx + 1],
+    'Desaturate reduces chroma spread'
+  );
+
+  // Blur / Sharpen
+  const noisy = new Uint8ClampedArray(5 * 5 * 4);
+  for (let i = 0; i < 25; i++) {
+    const v = i === 12 ? 240 : 40;
+    noisy[i * 4] = v;
+    noisy[i * 4 + 1] = v;
+    noisy[i * 4 + 2] = v;
+    noisy[i * 4 + 3] = 255;
+  }
+  const blurred = new Uint8ClampedArray(noisy);
+  const didBlur = blurSharpenBuffer({
+    data: blurred,
+    width: 5,
+    height: 5,
+    centerX: 2,
+    centerY: 2,
+    radius: 2,
+    hardness: 1,
+    strength: 1,
+    mode: 'blur',
+  });
+  assert.equal(didBlur, true);
+  assert.ok(blurred[cIdx] < 240 && blurred[cIdx] > 40, 'Blur softens isolated bright spike');
+
+  // Smudge drags left pigment rightward
+  const smudgeBuf = new Uint8ClampedArray(7 * 7 * 4);
+  for (let y = 0; y < 7; y++) {
+    for (let x = 0; x < 7; x++) {
+      const idx = (y * 7 + x) * 4;
+      smudgeBuf[idx] = x <= 2 ? 240 : 20;
+      smudgeBuf[idx + 1] = 20;
+      smudgeBuf[idx + 2] = 20;
+      smudgeBuf[idx + 3] = 255;
+    }
+  }
+  const didSmudge = smudgeBuffer({
+    data: smudgeBuf,
+    width: 7,
+    height: 7,
+    prevX: 2,
+    prevY: 3,
+    currX: 4,
+    currY: 3,
+    radius: 2,
+    hardness: 1,
+    strength: 0.9,
+  });
+  assert.equal(didSmudge, true);
+  assert.ok(smudgeBuf[(3 * 7 + 4) * 4] > 20, 'Smudge drags red pigment in stroke direction');
+}
+
+// ---- Crop & Straighten preserves vector editability and rotates coordinates ----
+{
+  const adj: AdjustmentLayer = {
+    id: 'a1',
+    name: 'Adj',
+    type: 'adjustment',
+    visible: true,
+    locked: false,
+    opacity: 100,
+    blendMode: 'normal',
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 100,
+    rotation: 0,
+    scaleX: 1,
+    scaleY: 1,
+    flipX: false,
+    flipY: false,
+    mask: null,
+    effects: cloneLayerEffects(DEFAULT_LAYER_EFFECTS),
+    adjustments: cloneAdjustments(DEFAULT_ADJUSTMENTS),
+  };
+  const shape: ShapeLayer = {
+    id: 's1',
+    name: 'Rect',
+    type: 'shape',
+    visible: true,
+    locked: false,
+    opacity: 100,
+    blendMode: 'normal',
+    x: 90,
+    y: 40,
+    width: 20,
+    height: 20,
+    rotation: 0,
+    scaleX: 1,
+    scaleY: 1,
+    flipX: false,
+    flipY: false,
+    mask: null,
+    effects: cloneLayerEffects(DEFAULT_LAYER_EFFECTS),
+    shapeKind: 'rect',
+    fill: '#ffffff',
+    fillEnabled: true,
+    stroke: '#000000',
+    strokeEnabled: true,
+    strokeWidth: 1,
+    cornerRadius: 0,
+  };
+  const straightened = cropAndStraightenLayers(
+    [adj, shape],
+    { x: 50, y: 20, width: 100, height: 60 },
+    15
+  );
+  assert.equal(straightened[0].width, 100);
+  assert.equal(straightened[0].height, 60);
+  const outShape = straightened[1] as ShapeLayer;
+  assert.equal(outShape.type, 'shape', 'Vector shape stays non-destructively editable');
+  assert.equal(outShape.rotation, 15, 'Straighten angle accumulates on vector layer rotation');
+  assert.ok(Math.abs(outShape.x + outShape.width / 2 - 50) < 0.01, 'Centered shape stays centered in crop');
+  assert.ok(Math.abs(outShape.y + outShape.height / 2 - 30) < 0.01);
+}
+
+// ---- Histogram stats & downsampled filter scaling ----
+{
+  const pixels = new Uint8ClampedArray([
+    0, 0, 0, 255,       // shadow clipped (luma 0)
+    100, 100, 100, 255, // midtone (luma 100)
+    100, 100, 100, 255, // midtone (luma 100)
+    255, 255, 255, 255, // highlight clipped (luma 255)
+    10, 20, 30, 0,      // transparent -> ignored
+  ]);
+  const hist = computeHistogram(pixels);
+  assert.equal(hist.totalPixels, 4, 'Only opaque pixels contribute to totalPixels');
+  const stats = computeHistogramChannelStats(hist.luma, hist.totalPixels);
+  assert.ok(Math.abs(stats.mean - 113.75) < 0.01, 'Computes exact tonal mean');
+  assert.equal(stats.median, 100, 'Computes 50th percentile median bin');
+  assert.ok(stats.stdDev > 80, 'Computes tonal spread standard deviation');
+  assert.equal(stats.shadowClipPct, 25, 'Computes shadow clipping % at bin 0');
+  assert.equal(stats.highlightClipPct, 25, 'Computes highlight clipping % at bin 255');
+
+  const emptyStats = computeHistogramChannelStats(new Uint32Array(256), 0);
+  assert.equal(emptyStats.mean, 0);
+  assert.equal(emptyStats.median, 0);
+  assert.equal(emptyStats.shadowClipPct, 0);
+  assert.equal(emptyStats.highlightClipPct, 0);
+
+  const scaledAdj = scaleAdjustmentsForSample(
+    {
+      ...cloneAdjustments(DEFAULT_ADJUSTMENTS),
+      filters: { ...DEFAULT_FILTERS, blur: 20, pixelate: 16 },
+    },
+    0.25
+  );
+  assert.equal(scaledAdj.filters?.blur, 5, 'Scales blur radius proportionally for preview histogram');
+  assert.equal(scaledAdj.filters?.pixelate, 4, 'Scales pixelate block size proportionally');
+}
+
+// ---- Canvas size anchor offsets & canvasSizeLayers ----
+{
+  assert.deepEqual(computeCanvasAnchorOffset(100, 80, 200, 120, 'c'), { dx: 50, dy: 20 });
+  assert.deepEqual(computeCanvasAnchorOffset(100, 80, 200, 120, 'nw'), { dx: 0, dy: 0 });
+  assert.deepEqual(computeCanvasAnchorOffset(100, 80, 200, 120, 'se'), { dx: 100, dy: 40 });
+  assert.deepEqual(computeCanvasAnchorOffset(200, 200, 100, 100, 'c'), { dx: -50, dy: -50 });
+
+  const shape: ShapeLayer = {
+    id: 'cs-s1',
+    name: 'Star',
+    type: 'shape',
+    visible: true,
+    locked: false,
+    opacity: 100,
+    blendMode: 'normal',
+    x: 10,
+    y: 20,
+    width: 40,
+    height: 40,
+    rotation: 0,
+    scaleX: 1,
+    scaleY: 1,
+    flipX: false,
+    flipY: false,
+    mask: null,
+    effects: cloneLayerEffects(DEFAULT_LAYER_EFFECTS),
+    shapeKind: 'star',
+    sides: 6,
+    fill: '#ffffff',
+    fillEnabled: true,
+    stroke: '#000000',
+    strokeEnabled: false,
+    strokeWidth: 2,
+    cornerRadius: 0,
+  };
+  const adj: AdjustmentLayer = {
+    id: 'cs-a1',
+    name: 'Adj',
+    type: 'adjustment',
+    visible: true,
+    locked: false,
+    opacity: 100,
+    blendMode: 'normal',
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 80,
+    rotation: 0,
+    scaleX: 1,
+    scaleY: 1,
+    flipX: false,
+    flipY: false,
+    mask: null,
+    effects: cloneLayerEffects(DEFAULT_LAYER_EFFECTS),
+    adjustments: cloneAdjustments(DEFAULT_ADJUSTMENTS),
+  };
+  const grp: GroupLayer = {
+    id: 'cs-g1',
+    name: 'Group',
+    type: 'group',
+    visible: true,
+    locked: false,
+    opacity: 100,
+    blendMode: 'normal',
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 80,
+    rotation: 0,
+    scaleX: 1,
+    scaleY: 1,
+    flipX: false,
+    flipY: false,
+    mask: null,
+    effects: cloneLayerEffects(DEFAULT_LAYER_EFFECTS),
+    expanded: true,
+  };
+
+  const resized = canvasSizeLayers([grp, adj, shape], 100, 80, 200, 140, 'c');
+  assert.equal(resized[0].width, 200, 'Group matches new canvas width');
+  assert.equal(resized[0].height, 140, 'Group matches new canvas height');
+  assert.equal(resized[1].width, 200, 'Adjustment layer matches new canvas width');
+  assert.equal(resized[2].x, 60, 'Shape x shifts by centered anchor delta (+50)');
+  assert.equal(resized[2].y, 50, 'Shape y shifts by centered anchor delta (+30)');
+
+  const snapped = restoreLayersFromSnapshot(snapshotLayers([shape]))[0] as ShapeLayer;
+  assert.equal(snapped.shapeKind, 'star');
+  assert.equal(snapped.sides, 6, 'Snapshot preserves custom star point count');
+}
+
+// ---- Trim transparent alpha bounds + crop roundtrip ----
+{
+  const w = 10;
+  const h = 8;
+  const buf = new Uint8ClampedArray(w * h * 4);
+  // Set opaque pixels in [2..5] x [3..6]
+  for (let y = 3; y <= 6; y++) {
+    for (let x = 2; x <= 5; x++) {
+      const idx = (y * w + x) * 4;
+      buf[idx] = 200;
+      buf[idx + 3] = 255;
+    }
+  }
+  const bounds = computeAlphaBoundsFromRgba(buf, w, h);
+  assert.deepEqual(bounds, { x: 2, y: 3, width: 4, height: 4 });
+
+  const emptyBounds = computeAlphaBoundsFromRgba(new Uint8ClampedArray(w * h * 4), w, h);
+  assert.equal(emptyBounds, null, 'All-transparent canvas returns null');
+
+  const fullBuf = new Uint8ClampedArray(4 * 4 * 4);
+  for (let i = 3; i < fullBuf.length; i += 4) fullBuf[i] = 255;
+  assert.equal(computeAlphaBoundsFromRgba(fullBuf, 4, 4), null, 'Fully opaque canvas needs no trim');
+
+  const shape: ShapeLayer = {
+    id: 'trim-s1',
+    name: 'Box',
+    type: 'shape',
+    visible: true,
+    locked: false,
+    opacity: 100,
+    blendMode: 'normal',
+    x: 2,
+    y: 3,
+    width: 4,
+    height: 4,
+    rotation: 0,
+    scaleX: 1,
+    scaleY: 1,
+    flipX: false,
+    flipY: false,
+    mask: null,
+    effects: cloneLayerEffects(DEFAULT_LAYER_EFFECTS),
+    shapeKind: 'rect',
+    fill: '#ffffff',
+    fillEnabled: true,
+    stroke: '#000000',
+    strokeEnabled: false,
+    strokeWidth: 1,
+    cornerRadius: 0,
+  };
+  const cropped = cropLayers([shape], bounds!);
+  assert.equal(cropped[0].x, 0, 'Trimmed shape shifts to origin x=0');
+  assert.equal(cropped[0].y, 0, 'Trimmed shape shifts to origin y=0');
+}
+
+// ---- Stroke selection & border stroke ----
+{
+  const w = 12;
+  const h = 12;
+  const target = new Uint8ClampedArray(w * h * 4);
+  const mask = new Uint8Array(w * h);
+  // Selected square x=3..8, y=3..8
+  for (let y = 3; y <= 8; y++) {
+    for (let x = 3; x <= 8; x++) {
+      mask[y * w + x] = 255;
+    }
+  }
+  const changed = strokeBufferWithSelectionMask({
+    targetData: target,
+    targetWidth: w,
+    targetHeight: h,
+    strokeRgba: [255, 0, 0, 255],
+    strokeWidthPx: 1,
+    maskData: mask,
+    maskWidth: w,
+    maskHeight: h,
+  });
+  assert.equal(changed, true);
+  // Perimeter pixel (3,3) is stroked
+  assert.equal(target[(3 * w + 3) * 4], 255);
+  assert.equal(target[(3 * w + 3) * 4 + 3], 255);
+  // Interior pixel (5,5) remains transparent
+  assert.equal(target[(5 * w + 5) * 4 + 3], 0);
+  // Outside pixel (1,1) remains transparent
+  assert.equal(target[(1 * w + 1) * 4 + 3], 0);
+
+  // Full canvas border when maskData is null
+  const fullTarget = new Uint8ClampedArray(8 * 8 * 4);
+  const fullChanged = strokeBufferWithSelectionMask({
+    targetData: fullTarget,
+    targetWidth: 8,
+    targetHeight: 8,
+    strokeRgba: [0, 255, 0, 255],
+    strokeWidthPx: 2,
+    maskData: null,
+    maskWidth: 8,
+    maskHeight: 8,
+  });
+  assert.equal(fullChanged, true);
+  assert.equal(fullTarget[(0 * 8 + 0) * 4 + 1], 255, 'Top-left corner stroked');
+  assert.equal(fullTarget[(4 * 8 + 4) * 4 + 3], 0, 'Center pixel remains transparent');
+}
+
+// ---- Vector shapes: polygon, star, arrow ----
+{
+  const hex = computeShapePathPoints(100, 100, 'polygon', 6);
+  assert.equal(hex.length, 6, 'Hexagon generates 6 vertices');
+
+  const star = computeShapePathPoints(100, 100, 'star', 7);
+  assert.equal(star.length, 14, '7-point star generates 14 vertices');
+
+  const arrow = computeShapePathPoints(120, 60, 'arrow');
+  assert.equal(arrow.length, 7, 'Arrow generates 7 polygon vertices');
+  for (const pt of arrow) {
+    assert.ok(pt.x >= 0 && pt.x <= 120, 'Arrow point x stays inside bounding width');
+    assert.ok(pt.y >= 0 && pt.y <= 60, 'Arrow point y stays inside bounding height');
+  }
+}
+
+// ---- Split Toning, Chromatic Aberration & Threshold ----
+{
+  // Split toning shifts darks toward shadow hue and brights toward highlight hue
+  const splitSrc = new Uint8ClampedArray([
+    35, 35, 35, 255,   // dark neutral shadow
+    220, 220, 220, 255, // bright neutral highlight
+  ]);
+  const splitAdj = {
+    ...cloneAdjustments(DEFAULT_ADJUSTMENTS),
+    splitTone: 80,
+    splitShadowHue: 240, // blue shadows
+    splitHighlightHue: 0, // red highlights
+  };
+  assert.equal(isDefaultAdjustments(splitAdj), false, 'Non-zero splitTone is non-default');
+  const splitOut = applyAdjustmentsToBuffer(splitSrc, 2, 1, splitAdj);
+  assert.ok(splitOut[2] > splitOut[0], 'Blue shadow split tone boosts blue over red in shadows');
+  assert.ok(splitOut[4] > splitOut[6], 'Red highlight split tone boosts red over blue in highlights');
+
+  // Threshold produces strict binary black or white
+  const threshSrc = new Uint8ClampedArray([
+    40, 40, 40, 255,
+    200, 200, 200, 255,
+    150, 150, 150, 0,
+  ]);
+  const threshAdj = {
+    ...cloneAdjustments(DEFAULT_ADJUSTMENTS),
+    filters: { ...DEFAULT_FILTERS, threshold: 128 },
+  };
+  assert.equal(isDefaultFilters(threshAdj.filters), false, 'Active threshold marks filters non-default');
+  const threshOut = applyAdjustmentsToBuffer(threshSrc, 3, 1, threshAdj);
+  assert.deepEqual(Array.from(threshOut.slice(0, 4)), [0, 0, 0, 255], 'Dark pixel snaps to black');
+  assert.deepEqual(Array.from(threshOut.slice(4, 8)), [255, 255, 255, 255], 'Bright pixel snaps to white');
+  assert.equal(threshOut[11], 0, 'Transparent alpha preserved during threshold');
+
+  // Chromatic aberration shifts red outward and blue inward radially around edges
+  const caW = 11;
+  const caH = 5;
+  const caSrc = new Uint8ClampedArray(caW * caH * 4);
+  // Dark opaque background with a 3px white vertical block at x=6..8
+  for (let i = 3; i < caSrc.length; i += 4) caSrc[i] = 255;
+  for (let y = 0; y < caH; y++) {
+    for (let x = 6; x <= 8; x++) {
+      const i = (y * caW + x) * 4;
+      caSrc[i] = 255;
+      caSrc[i + 1] = 255;
+      caSrc[i + 2] = 255;
+    }
+  }
+  const caAdj = {
+    ...cloneAdjustments(DEFAULT_ADJUSTMENTS),
+    filters: { ...DEFAULT_FILTERS, chromaticAberration: 100 },
+  };
+  assert.equal(isDefaultFilters(caAdj.filters), false);
+  const caOut = applyAdjustmentsToBuffer(caSrc, caW, caH, caAdj);
+  // Inner edge (x=6): red samples outward into the white block, blue samples inward toward dark
+  const innerIdx = (2 * caW + 6) * 4;
+  assert.ok(caOut[innerIdx] > caOut[innerIdx + 2], 'Inner fringe boosts red over blue');
+  // Outer edge (x=9): blue samples inward into the white block, red samples outward into dark
+  const outerIdx = (2 * caW + 9) * 4;
+  assert.ok(caOut[outerIdx + 2] > caOut[outerIdx], 'Outer fringe boosts blue over red');
+
+  // Sanitize backward compatibility when older presets omit new fields
+  const sanitized = sanitizeAdjustments({ brightness: 15 });
+  assert.equal(sanitized.splitTone, 0);
+  assert.equal(sanitized.splitShadowHue, 220);
+  assert.equal(sanitized.splitHighlightHue, 40);
+  assert.equal(sanitized.filters?.chromaticAberration, 0);
+  assert.equal(sanitized.filters?.threshold, 0);
+}
+
+// ---- HSL Color Mixer, Duotone Gradient Map, Lens Distortion & Tilt-Shift ----
+{
+  // HSL Mixer shifts targeted color band while sparing neutrals and unrelated hues
+  const hslSrc = new Uint8ClampedArray([
+    220, 40, 40, 255,   // saturated red
+    120, 120, 120, 255, // neutral gray
+    40, 60, 220, 255,   // saturated blue
+  ]);
+  const hslCfg = createDefaultHslMixer();
+  hslCfg.red = { h: 100, s: 0, l: 0 };
+  const hslAdj = { ...cloneAdjustments(DEFAULT_ADJUSTMENTS), hsl: hslCfg };
+  assert.equal(isDefaultAdjustments(hslAdj), false, 'Edited HSL band marks adjustments non-default');
+  const hslOut = applyAdjustmentsToBuffer(hslSrc, 3, 1, hslAdj);
+  assert.ok(hslOut[1] > hslSrc[1], 'Shifting Reds hue positive increases green component on red pixel');
+  assert.deepEqual(Array.from(hslOut.slice(4, 8)), [120, 120, 120, 255], 'Neutral gray unaffected by HSL mixer');
+  assert.ok(Math.abs(hslOut[10] - hslSrc[10]) <= 3, 'Unrelated blue pixel stays preserved');
+
+  // Duotone Gradient Map maps darks -> shadowColor and brights -> highlightColor
+  const gmSrc = new Uint8ClampedArray([
+    0, 0, 0, 255,
+    255, 255, 255, 255,
+  ]);
+  const gmAdj = {
+    ...cloneAdjustments(DEFAULT_ADJUSTMENTS),
+    gradientMap: {
+      enabled: true,
+      shadowColor: '#0000FF',
+      highlightColor: '#FF0000',
+      mix: 100,
+    },
+  };
+  assert.equal(isDefaultAdjustments(gmAdj), false);
+  const gmOut = applyAdjustmentsToBuffer(gmSrc, 2, 1, gmAdj);
+  assert.deepEqual(Array.from(gmOut.slice(0, 4)), [0, 0, 255, 255], 'Black maps to shadow color');
+  assert.deepEqual(Array.from(gmOut.slice(4, 8)), [255, 0, 0, 255], 'White maps to highlight color');
+
+  // Lens Distortion & Tilt-Shift flags
+  const lensAdj = {
+    ...cloneAdjustments(DEFAULT_ADJUSTMENTS),
+    filters: { ...DEFAULT_FILTERS, lensDistortion: 45 },
+  };
+  assert.equal(isDefaultFilters(lensAdj.filters), false);
+  const tsAdj = {
+    ...cloneAdjustments(DEFAULT_ADJUSTMENTS),
+    filters: { ...DEFAULT_FILTERS, tiltShiftBlur: 12, tiltShiftPos: 50, tiltShiftBand: 20 },
+  };
+  assert.equal(isDefaultFilters(tsAdj.filters), false);
+  // Build 11x11 image with checkerboard top/bottom rows and crisp middle row (y=5)
+  const tsW = 11;
+  const tsH = 11;
+  const tsSrc = new Uint8ClampedArray(tsW * tsH * 4);
+  for (let y = 0; y < tsH; y++) {
+    for (let x = 0; x < tsW; x++) {
+      const idx = (y * tsW + x) * 4;
+      const v = (x + y) % 2 === 0 ? 250 : 10;
+      tsSrc[idx] = v;
+      tsSrc[idx + 1] = v;
+      tsSrc[idx + 2] = v;
+      tsSrc[idx + 3] = 255;
+    }
+  }
+  const tsOut = applyAdjustmentsToBuffer(tsSrc, tsW, tsH, tsAdj);
+  const midDiff = Math.abs(tsOut[(5 * tsW + 5) * 4] - tsSrc[(5 * tsW + 5) * 4]);
+  const topDiff = Math.abs(tsOut[0] - tsSrc[0]);
+  assert.equal(midDiff, 0, 'Tilt-shift focus center row stays sharp');
+  assert.ok(topDiff > 20, 'Tilt-shift outer rows are blurred');
+
+  // Sanitize defaults for new fields
+  const backCompat = sanitizeAdjustments({ brightness: 10 });
+  assert.equal(backCompat.gradientMap?.enabled, false);
+  assert.equal(backCompat.hsl?.red.h, 0);
+  assert.equal(backCompat.filters?.lensDistortion, 0);
+  assert.equal(backCompat.filters?.tiltShiftBlur, 0);
+}
+
+// ---- Destructive Filter Gallery, Auto Levels/Contrast, Color Replace, Red-Eye, Perspective ----
+{
+  // Auto Levels & Auto Contrast stretch narrow tonal range
+  const narrow = new Uint8ClampedArray([
+    80, 90, 100, 255,
+    120, 130, 140, 255,
+    160, 170, 180, 255,
+    10, 10, 10, 0,
+  ]);
+  const lvlOut = autoLevelsBuffer(narrow, 0);
+  assert.equal(lvlOut[0], 0, 'Auto Levels stretches channel min to 0');
+  assert.equal(lvlOut[8], 255, 'Auto Levels stretches channel max to 255');
+  assert.equal(lvlOut[15], 0, 'Auto Levels skips transparent pixel');
+
+  const conOut = autoContrastBuffer(narrow, 0);
+  assert.ok(conOut[8] > 180 && conOut[0] < 80, 'Auto Contrast expands luminance range');
+
+  // High Pass, Motion Blur, Emboss, Edge Detect, Oil Paint, Halftone
+  const w = 8;
+  const h = 8;
+  const pattern = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const v = x < 4 ? 30 : 220;
+      pattern[i] = v;
+      pattern[i + 1] = v;
+      pattern[i + 2] = v;
+      pattern[i + 3] = 255;
+    }
+  }
+  const hp = applyHighPassBuffer(pattern, w, h, 2);
+  assert.equal(hp.length, pattern.length);
+  assert.ok(Math.abs(hp[0] - 128) <= 2, 'Uniform flat region in High Pass settles near 128 gray');
+
+  const mb = applyMotionBlurBuffer(pattern, w, h, 3, 0);
+  assert.ok(mb[(3 * w + 3) * 4] > 30 && mb[(3 * w + 3) * 4] < 220, 'Horizontal motion blur blends across vertical edge');
+
+  const emb = applyEmbossBuffer(pattern, w, h, 2, 0);
+  assert.equal(emb[0], 128, 'Flat left region embosses to neutral 128 gray');
+  assert.notEqual(emb[(3 * w + 4) * 4], 128, 'Edge transitions create relief highlights/shadows');
+
+  const edge = applyEdgeDetectBuffer(pattern, w, h);
+  assert.equal(edge[0], 0, 'Flat interior has zero Sobel gradient');
+  assert.ok(edge[(3 * w + 4) * 4] > 200, 'Sharp edge produces strong Sobel response');
+
+  const oil = applyOilPaintBuffer(pattern, w, h, 2);
+  assert.equal(oil[(3 * w + 7) * 4 + 3], 255);
+
+  const half = applyHalftoneBuffer(pattern, w, h, 4);
+  assert.equal(half.length, pattern.length);
+
+  // Color Replace preserves luminance direction while shifting hue
+  const crBuf = new Uint8ClampedArray([220, 40, 40, 255]); // bright red
+  const crChanged = colorReplaceBuffer({
+    data: crBuf,
+    width: 1,
+    height: 1,
+    centerX: 0,
+    centerY: 0,
+    radius: 3,
+    hardness: 1,
+    opacity: 1,
+    targetRgba: [0, 0, 255, 255],
+  });
+  assert.equal(crChanged, true);
+  assert.ok(crBuf[2] > crBuf[0], 'Color replace shifts red pixel toward blue hue');
+
+  // Red-Eye Removal desaturates red pupils while sparing bright white catchlights
+  const eyeBuf = new Uint8ClampedArray([
+    210, 35, 35, 255,   // flash red-eye pixel
+    245, 245, 245, 255, // bright specular catchlight
+  ]);
+  const eyeChanged = redEyeRemovalBuffer({
+    data: eyeBuf,
+    width: 2,
+    height: 1,
+    centerX: 0.5,
+    centerY: 0,
+    radius: 2,
+    hardness: 1,
+  });
+  assert.equal(eyeChanged, true);
+  assert.ok(eyeBuf[0] < 100, 'Red-eye pixel red channel is neutralized');
+  assert.deepEqual(Array.from(eyeBuf.slice(4, 8)), [245, 245, 245, 255], 'White catchlight preserved');
+
+  // Projective Homography & Perspective Warp
+  const pw = 6;
+  const ph = 6;
+  const pSrc = new Uint8ClampedArray(pw * ph * 4);
+  for (let i = 0; i < pw * ph; i++) {
+    pSrc[i * 4] = (i * 7) % 255;
+    pSrc[i * 4 + 1] = 100;
+    pSrc[i * 4 + 2] = 180;
+    pSrc[i * 4 + 3] = 255;
+  }
+  const identityPts = [
+    { x: 0, y: 0 },
+    { x: pw - 1, y: 0 },
+    { x: pw - 1, y: ph - 1 },
+    { x: 0, y: ph - 1 },
+  ];
+  assert.ok(solveHomography(identityPts, identityPts) !== null, 'Identity homography solves cleanly');
+  const pIdentityOut = warpBufferPerspective(pSrc, pw, ph, identityPts);
+  assert.deepEqual(Array.from(pIdentityOut), Array.from(pSrc), 'Identity perspective corners preserve buffer');
+
+  const keystonePts = [
+    { x: 1, y: 0 },
+    { x: pw - 2, y: 0 },
+    { x: pw - 1, y: ph - 1 },
+    { x: 0, y: ph - 1 },
+  ];
+  const pKeystoneOut = warpBufferPerspective(pSrc, pw, ph, keystonePts);
+  assert.equal(pKeystoneOut[3], 0, 'Top-left corner outside inward keystone quad becomes transparent');
+  assert.equal(pKeystoneOut[((ph - 1) * pw + 2) * 4 + 3], 255, 'Bottom center inside quad remains opaque');
 }
 
 console.log('All GStudio graphics engine unit tests passed.');
