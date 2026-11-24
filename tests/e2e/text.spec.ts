@@ -26,7 +26,7 @@ test.describe('Text layers', () => {
     const modal = page.locator('form').filter({ hasText: 'Edit Text Layer' });
     await expect(modal.getByRole('heading', { name: 'Edit Text Layer' })).toBeVisible();
     await modal.locator('textarea').fill('Hello GStudio');
-    await modal.locator('input[type="number"]').fill('96');
+    await modal.getByRole('spinbutton', { name: 'Size (px)' }).fill('96');
 
     await modal.locator('input[type="color"]').evaluate((input) => {
       const el = input as HTMLInputElement;
