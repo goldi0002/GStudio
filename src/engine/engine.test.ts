@@ -95,6 +95,19 @@ import {
   traceSelectionBoundarySegments,
   warpBufferPerspective,
 } from './canvasOps';
+import {
+  applyLiquifyDab,
+  applyLiquifyStroke,
+  cloneLiquifyField,
+  createLiquifyField,
+  renderLiquifyBuffer,
+  resetLiquifyField,
+  scaleLiquifyField,
+} from './liquify';
+import {
+  computeColorRangeMask,
+  renderColorRangePreviewBuffer,
+} from './colorRange';
 import type { AdjustmentLayer, GroupLayer, Layer, RasterLayer, ShapeLayer } from '../types/editor';
 
 // 1. Default adjustments identity test
@@ -1984,6 +1997,186 @@ function revisionDoc(id: string, updatedAt: number, dirty: boolean): DocumentSta
   const pKeystoneOut = warpBufferPerspective(pSrc, pw, ph, keystonePts);
   assert.equal(pKeystoneOut[3], 0, 'Top-left corner outside inward keystone quad becomes transparent');
   assert.equal(pKeystoneOut[((ph - 1) * pw + 2) * 4 + 3], 255, 'Bottom center inside quad remains opaque');
+}
+
+// ---- Liquify Mesh Displacement Engine ----
+{
+  const w = 16;
+  const h = 16;
+  const src = new Uint8ClampedArray(w * h * 4);
+  // Left half red opaque, right half blue transparent-edge test
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (x < 8) {
+        src[i] = 240;
+        src[i + 1] = 20;
+        src[i + 2] = 20;
+        src[i + 3] = 255;
+      } else {
+        src[i] = 0;
+        src[i + 1] = 0;
+        src[i + 2] = 0;
+        src[i + 3] = 0;
+      }
+    }
+  }
+
+  // Identity displacement preserves exact pixels
+  const field = createLiquifyField(w, h);
+  const identityOut = renderLiquifyBuffer(src, w, h, field);
+  assert.deepEqual(Array.from(identityOut), Array.from(src), 'Zeroed Liquify field is an exact identity');
+
+  // Push stroke rightward across x=7 -> x=10 drags red pixels into transparent right half without black fringes
+  const pushed = applyLiquifyStroke(field, 6, 8, 10, 8, {
+    mode: 'push',
+    radius: 5,
+    strength: 95,
+    density: 50,
+  });
+  assert.equal(pushed, true);
+  const pushOut = renderLiquifyBuffer(src, w, h, field);
+  const draggedIdx = (8 * w + 9) * 4;
+  assert.ok(pushOut[draggedIdx + 3] > 0, 'Push stroke pulls opaque edge into previously transparent region');
+  assert.ok(pushOut[draggedIdx] > 200, 'Premultiplied resampling prevents dark fringe on transparent edge');
+
+  // Clone + Reconstruct attenuates displacement back toward 0
+  const savedField = cloneLiquifyField(field);
+  const magBefore = Math.hypot(field.dx[8 * w + 9], field.dy[8 * w + 9]);
+  applyLiquifyDab(field, {
+    mode: 'reconstruct',
+    x: 9,
+    y: 8,
+    prevX: 9,
+    prevY: 8,
+    radius: 6,
+    strength: 100,
+    density: 60,
+  });
+  const magAfter = Math.hypot(field.dx[8 * w + 9], field.dy[8 * w + 9]);
+  assert.ok(magAfter < magBefore, 'Reconstruct brush reduces displacement magnitude');
+
+  // Scale field doubles vectors when doubling resolution
+  const scaled = scaleLiquifyField(savedField, w * 2, h * 2);
+  assert.equal(scaled.width, w * 2);
+  assert.equal(scaled.height, h * 2);
+  assert.ok(
+    Math.abs(scaled.dx[16 * (w * 2) + 18]) > Math.abs(savedField.dx[8 * w + 9]),
+    'Scaling Liquify field up scales displacement vector magnitudes proportionally'
+  );
+
+  // Bloat & Pinch & Twirl & Reset
+  resetLiquifyField(field);
+  assert.equal(field.dx[8 * w + 9], 0, 'resetLiquifyField clears all displacements');
+  applyLiquifyDab(field, {
+    mode: 'bloat',
+    x: 8,
+    y: 8,
+    prevX: 8,
+    prevY: 8,
+    radius: 6,
+    strength: 80,
+  });
+  // Pixel to right of center (+dxCenter) in bloat should have negative backward dx (samples closer to center)
+  assert.ok(field.dx[8 * w + 10] < 0, 'Bloat pulls outer pixels outward by sampling closer to center');
+
+  resetLiquifyField(field);
+  applyLiquifyDab(field, {
+    mode: 'pinch',
+    x: 8,
+    y: 8,
+    prevX: 8,
+    prevY: 8,
+    radius: 6,
+    strength: 80,
+  });
+  assert.ok(field.dx[8 * w + 10] > 0, 'Pinch pulls pixels inward by sampling farther from center');
+
+  resetLiquifyField(field);
+  applyLiquifyDab(field, {
+    mode: 'twirl-cw',
+    x: 8,
+    y: 8,
+    prevX: 8,
+    prevY: 8,
+    radius: 6,
+    strength: 80,
+  });
+  assert.notEqual(field.dy[8 * w + 10], 0, 'Twirl adds tangential displacement');
+}
+
+// ---- Color Range & Chroma Matte Selector ----
+{
+  // 4x1 strip: Saturated Red, Saturated Blue, Bright White, Dark Charcoal
+  const w = 4;
+  const h = 1;
+  const strip = new Uint8ClampedArray([
+    235, 30, 30, 255,   // 0: red
+    25, 55, 240, 255,   // 1: blue
+    248, 248, 248, 255, // 2: highlight white
+    18, 18, 18, 255,    // 3: shadow dark
+  ]);
+
+  const sampledBlue = computeColorRangeMask(strip, w, h, {
+    mode: 'sampled',
+    sampleRgb: [25, 55, 240],
+    fuzziness: 45,
+    invert: false,
+  });
+  assert.equal(sampledBlue.maskData[1], 255, 'Exact sampled color scores full mask 255');
+  assert.equal(sampledBlue.maskData[0], 0, 'Opposite red color is excluded at moderate fuzziness');
+  assert.deepEqual(sampledBlue.bounds, { x: 1, y: 0, width: 1, height: 1 });
+  assert.equal(sampledBlue.matchCount, 1);
+
+  const invertedBlue = computeColorRangeMask(strip, w, h, {
+    mode: 'sampled',
+    sampleRgb: [25, 55, 240],
+    fuzziness: 45,
+    invert: true,
+  });
+  assert.equal(invertedBlue.maskData[1], 0, 'Invert flips exact match to 0');
+  assert.equal(invertedBlue.maskData[0], 255, 'Invert flips excluded pixel to 255');
+
+  const redsPreset = computeColorRangeMask(strip, w, h, {
+    mode: 'reds',
+    sampleRgb: [0, 0, 0],
+    fuzziness: 50,
+    invert: false,
+  });
+  assert.equal(redsPreset.maskData[0], 255, 'Reds band selects saturated red');
+  assert.equal(redsPreset.maskData[1], 0, 'Reds band excludes blue');
+  assert.equal(redsPreset.maskData[2], 0, 'Reds band excludes neutral white');
+
+  const highlightsPreset = computeColorRangeMask(strip, w, h, {
+    mode: 'highlights',
+    sampleRgb: [0, 0, 0],
+    fuzziness: 40,
+    invert: false,
+  });
+  assert.ok(highlightsPreset.maskData[2] > 230, 'Highlights isolates bright white');
+  assert.equal(highlightsPreset.maskData[3], 0, 'Highlights excludes dark shadow');
+
+  const shadowsPreset = computeColorRangeMask(strip, w, h, {
+    mode: 'shadows',
+    sampleRgb: [0, 0, 0],
+    fuzziness: 40,
+    invert: false,
+  });
+  assert.ok(shadowsPreset.maskData[3] > 230, 'Shadows isolates dark charcoal');
+  assert.equal(shadowsPreset.maskData[2], 0, 'Shadows excludes bright white');
+
+  // Preview modes: matte, cutout, rubylith
+  const matte = renderColorRangePreviewBuffer(strip, sampledBlue.maskData, 'matte');
+  assert.deepEqual(Array.from(matte.slice(0, 4)), [0, 0, 0, 255]);
+  assert.deepEqual(Array.from(matte.slice(4, 8)), [255, 255, 255, 255]);
+
+  const cutout = renderColorRangePreviewBuffer(strip, sampledBlue.maskData, 'cutout');
+  assert.equal(cutout[3], 0, 'Cutout hides unselected red pixel');
+  assert.equal(cutout[7], 255, 'Cutout preserves selected blue pixel alpha');
+
+  const rubylith = renderColorRangePreviewBuffer(strip, sampledBlue.maskData, 'rubylith');
+  assert.deepEqual(Array.from(rubylith.slice(4, 8)), [25, 55, 240, 255], 'Selected pixel untouched in rubylith preview');
+  assert.ok(rubylith[12] > strip[12], 'Unselected dark pixel receives crimson rubylith tint');
 }
 
 console.log('All GStudio graphics engine unit tests passed.');

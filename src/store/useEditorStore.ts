@@ -18,6 +18,11 @@ import {
   type GalleryFilterParams,
 } from '../engine/filters';
 import {
+  renderLiquifyBuffer,
+  scaleLiquifyField,
+  type LiquifyField,
+} from '../engine/liquify';
+import {
   applyPixelFilterToCanvas,
   applySelectionClipToContext,
   canvasSizeLayers,
@@ -176,9 +181,20 @@ export interface ModalStates {
   batchProcess: boolean;
   filterGallery: boolean;
   perspective: boolean;
+  liquify: boolean;
+  colorRange: boolean;
+  commandPalette: boolean;
   shortcuts: boolean;
   privacy: boolean;
   editingTextLayerId: string | null;
+}
+
+export interface CursorPixelColor {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+  hex: string;
 }
 
 interface EditorStoreState {
@@ -198,6 +214,7 @@ interface EditorStoreState {
   fitTrigger: number;
   liveCanvasTick: number;
   cursorCanvasPos: { x: number; y: number } | null;
+  cursorPixelColor: CursorPixelColor | null;
   viewportSettings: ViewportSettings;
   inspectorOpen: InspectorPanelsState;
   inspectorWidth: number;
@@ -235,6 +252,7 @@ interface EditorStoreState {
   setBackgroundColor: (hex: string) => void;
   swapColors: () => void;
   setCursorCanvasPos: (pos: { x: number; y: number } | null) => void;
+  setCursorPixelColor: (color: CursorPixelColor | null) => void;
   bumpLiveCanvasTick: () => void;
 
   setZoom: (zoom: number, panX?: number, panY?: number) => void;
@@ -341,6 +359,12 @@ interface EditorStoreState {
   applyAutoContrastToLayer: () => void;
   applyGalleryFilterToLayer: (params: GalleryFilterParams) => void;
   applyPerspectiveToActiveLayer: (dstCorners: Array<{ x: number; y: number }>) => void;
+  applyLiquifyToActiveLayer: (previewField: LiquifyField) => void;
+  applyColorRangeResult: (
+    maskData: Uint8Array,
+    bounds: { x: number; y: number; width: number; height: number },
+    output: 'selection' | 'mask'
+  ) => void;
   resetLevelsAndCurves: () => void;
   resetFilters: () => void;
   commitAdjustmentsHistory: (label?: string) => void;
@@ -519,6 +543,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
   fitTrigger: 0,
   liveCanvasTick: 0,
   cursorCanvasPos: null,
+  cursorPixelColor: null,
   viewportSettings: {
     showRulers: true,
     showGrid: false,
@@ -551,6 +576,9 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     batchProcess: false,
     filterGallery: false,
     perspective: false,
+    liquify: false,
+    colorRange: false,
+    commandPalette: false,
     shortcuts: false,
     privacy: false,
     editingTextLayerId: null,
@@ -893,6 +921,7 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     })),
 
   setCursorCanvasPos: (pos) => set({ cursorCanvasPos: pos }),
+  setCursorPixelColor: (color) => set({ cursorPixelColor: color }),
   bumpLiveCanvasTick: () => set((s) => ({ liveCanvasTick: s.liveCanvasTick + 1 })),
 
   setZoom: (zoom, panX, panY) => {
@@ -2746,6 +2775,85 @@ export const useEditorStore = create<EditorStoreState>((set, get) => ({
     );
     set((s) => ({ liveCanvasTick: s.liveCanvasTick + 1 }));
     get().showToast('Applied perspective warp to active layer.', 'success');
+  },
+
+  applyLiquifyToActiveLayer: (previewField) => {
+    const doc = get().documents.find((d) => d.id === get().activeDocumentId);
+    if (!doc) return;
+    const layer = doc.layers.find((l) => l.id === doc.activeLayerId);
+    if (!layer || layer.locked || layer.type !== 'raster') {
+      get().showToast('Select an unlocked raster layer to apply Liquify.', 'info');
+      return;
+    }
+    const fullField = scaleLiquifyField(previewField, layer.canvas.width, layer.canvas.height);
+    const ok = applyPixelFilterToCanvas({
+      targetCanvas: layer.canvas,
+      transform: (data, w, h) => renderLiquifyBuffer(data, w, h, fullField),
+      selection: doc.selection,
+      offsetX: layer.x,
+      offsetY: layer.y,
+      scaleX: layer.scaleX,
+      scaleY: layer.scaleY,
+    });
+    if (ok) {
+      get().commitCanvasMutation('Liquify Warp');
+      set((s) => ({ liveCanvasTick: s.liveCanvasTick + 1 }));
+      get().showToast('Applied Liquify mesh warp to active layer.', 'success');
+    }
+  },
+
+  applyColorRangeResult: (maskData, bounds, output) => {
+    const doc = get().documents.find((d) => d.id === get().activeDocumentId);
+    if (!doc) return;
+    if (bounds.width <= 0 || bounds.height <= 0) {
+      get().setSelection(null);
+      get().showToast('No pixels matched the selected color range.', 'info');
+      return;
+    }
+    if (output === 'selection') {
+      get().setSelection({
+        kind: 'mask',
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+        maskData,
+        maskWidth: doc.width,
+        maskHeight: doc.height,
+        inverted: false,
+      });
+      get().showToast('Created Color Range selection.', 'success');
+      return;
+    }
+
+    const activeLayer = doc.layers.find((l) => l.id === doc.activeLayerId);
+    if (!activeLayer) return;
+    const maskCanvas = createCanvas(doc.width, doc.height);
+    writeMaskBufferToMaskCanvas(maskCanvas, maskData, doc.width, doc.height, false);
+    withActiveDocMutation(
+      get,
+      set,
+      (curr) => ({
+        ...curr,
+        layers: curr.layers.map((l) =>
+          l.id === activeLayer.id
+            ? {
+                ...l,
+                mask: {
+                  canvas: maskCanvas,
+                  enabled: true,
+                  inverted: false,
+                },
+              }
+            : l
+        ),
+        editingTarget: 'mask',
+        selection: null,
+      }),
+      'Mask from Color Range'
+    );
+    set((s) => ({ liveCanvasTick: s.liveCanvasTick + 1 }));
+    get().showToast(`Applied Color Range as layer mask on "${activeLayer.name}".`, 'success');
   },
 
   resetLevelsAndCurves: () => {

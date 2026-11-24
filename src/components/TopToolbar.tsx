@@ -6,6 +6,7 @@ import {
   Home,
   Moon,
   Redo2,
+  Search,
   Sun,
   Undo2,
 } from 'lucide-react';
@@ -255,6 +256,11 @@ export const TopToolbar: React.FC = () => {
         action: () => featherActiveSelection(6),
       },
       {
+        label: 'Color Range…',
+        disabled: !activeDoc,
+        action: () => openModal('colorRange'),
+      },
+      {
         label: 'Deselect',
         shortcut: '⌘D',
         disabled: !activeDoc?.selection,
@@ -342,6 +348,11 @@ export const TopToolbar: React.FC = () => {
         label: 'Mask from Selection',
         disabled: !activeLayer || !activeDoc?.selection,
         action: () => applySelectionAsMask('reveal'),
+      },
+      {
+        label: 'Mask from Color Range…',
+        disabled: !activeLayer,
+        action: () => openModal('colorRange'),
       },
       {
         label: 'Remove Layer Mask',
@@ -439,6 +450,11 @@ export const TopToolbar: React.FC = () => {
         label: 'Filter Gallery…',
         disabled: !activeLayer || activeLayer.type !== 'raster' || activeLayer.locked,
         action: () => openFilterGallery(),
+      },
+      {
+        label: 'Liquify…',
+        disabled: !activeLayer || activeLayer.type !== 'raster' || activeLayer.locked,
+        action: () => openModal('liquify'),
       },
       { divider: true },
       {
@@ -733,6 +749,18 @@ export const TopToolbar: React.FC = () => {
             </button>
           </div>
         )}
+
+        <button
+          type="button"
+          onClick={() => openModal('commandPalette')}
+          title="Command Palette (⌘K)"
+          className="px-2 py-1 rounded-md border hover:bg-[var(--lp-hover)] transition-colors cursor-pointer flex items-center gap-1.5 text-[11px] text-[var(--lp-text-secondary)] hover:text-[var(--lp-text)] whitespace-nowrap shrink-0"
+          style={{ borderColor: 'var(--lp-border)' }}
+        >
+          <Search className="w-3 h-3" />
+          <span className="hidden md:inline">Commands</span>
+          <kbd className="font-mono-tabular text-[10px] opacity-75">⌘K</kbd>
+        </button>
 
         {view === 'editor' && (
           <button

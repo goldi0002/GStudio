@@ -27,6 +27,7 @@ const SHORTCUTS = [
   ['⌘Z / ⇧⌘Z', 'Undo / Redo'],
   ['⌘0 / ⌘1', 'Fit Screen / Actual Pixels'],
   ['⌘E / ⌘S / ⌘W', 'Export / Save Locally / Close Tab'],
+  ['⌘K', 'Open Command Palette (Search Tools, Filters & Actions)'],
 ];
 
 export const ShortcutsPrivacyModal: React.FC = () => {

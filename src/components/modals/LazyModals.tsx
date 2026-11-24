@@ -28,6 +28,15 @@ const ShortcutsPrivacyModal = lazy(() =>
 const TextEditModal = lazy(() =>
   import('./TextEditModal').then((m) => ({ default: m.TextEditModal }))
 );
+const LiquifyModal = lazy(() =>
+  import('./LiquifyModal').then((m) => ({ default: m.LiquifyModal }))
+);
+const ColorRangeModal = lazy(() =>
+  import('./ColorRangeModal').then((m) => ({ default: m.ColorRangeModal }))
+);
+const CommandPaletteModal = lazy(() =>
+  import('./CommandPaletteModal').then((m) => ({ default: m.CommandPaletteModal }))
+);
 
 const MODALS: Array<{ isOpen: (m: ModalState) => boolean; Component: React.ComponentType }> = [
   { isOpen: (m) => m.newProject, Component: NewProjectModal },
@@ -37,6 +46,9 @@ const MODALS: Array<{ isOpen: (m: ModalState) => boolean; Component: React.Compo
   { isOpen: (m) => m.batchProcess, Component: BatchProcessModal },
   { isOpen: (m) => m.filterGallery, Component: FilterGalleryModal },
   { isOpen: (m) => m.perspective, Component: PerspectiveModal },
+  { isOpen: (m) => m.liquify, Component: LiquifyModal },
+  { isOpen: (m) => m.colorRange, Component: ColorRangeModal },
+  { isOpen: (m) => m.commandPalette, Component: CommandPaletteModal },
   { isOpen: (m) => m.shortcuts || m.privacy, Component: ShortcutsPrivacyModal },
   { isOpen: (m) => m.editingTextLayerId != null, Component: TextEditModal },
 ];

@@ -25,6 +25,7 @@ import {
   paintColorReplaceDab,
   pickTopmostLayerAtPoint,
   renderLayerNodeToContext,
+  rgbaToHex,
   rotatePointAroundCenter,
   sampleAverageColorFromCanvas,
   snapRotationAngle,
@@ -168,6 +169,8 @@ export const CanvasWorkspace: React.FC = () => {
     setForegroundColor,
     setEditingTextLayerId,
     setCursorCanvasPos,
+    setCursorPixelColor,
+    cursorPixelColor,
     bumpLiveCanvasTick,
     setSplitPosition,
     showToast,
@@ -188,6 +191,7 @@ export const CanvasWorkspace: React.FC = () => {
   const adjustVersionRef = useRef(0);
   const cloneAlignedOffsetRef = useRef<{ dx: number; dy: number } | null>(null);
   const lastHistogramBumpRef = useRef(0);
+  const pixelSampleCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const [containerSize, setContainerSize] = useState({ width: 800, height: 600 });
   const [spacePressed, setSpacePressed] = useState(false);
@@ -1003,6 +1007,132 @@ export const CanvasWorkspace: React.FC = () => {
       ctx.restore();
     }
 
+    // Eyedropper 9×9 Magnifier Pixel Loupe
+    if (activeTool === 'eyedropper' && cursorScreen && afterCanvas) {
+      const px = Math.floor((cursorScreen.x - origin.x) / doc.zoom);
+      const py = Math.floor((cursorScreen.y - origin.y) / doc.zoom);
+      if (px >= 0 && py >= 0 && px < doc.width && py < doc.height) {
+        const loupeRadius = 46;
+        const gridCount = 9;
+        const cellSize = 10;
+        const gridTotal = gridCount * cellSize; // 90px
+        const gridRadius = gridTotal / 2; // 45px
+        const rulerPad = viewportSettings.showRulers ? RULER_SIZE : 0;
+
+        const lx =
+          cursorScreen.x + 68 + loupeRadius > w - 8
+            ? cursorScreen.x - 68
+            : cursorScreen.x + 68;
+        const ly =
+          cursorScreen.y - 68 - loupeRadius < rulerPad + 8
+            ? cursorScreen.y + 68
+            : cursorScreen.y - 68;
+
+        ctx.save();
+        // Drop shadow for loupe housing
+        ctx.save();
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+        ctx.shadowBlur = 16;
+        ctx.shadowOffsetY = 4;
+        ctx.beginPath();
+        ctx.arc(lx, ly, loupeRadius, 0, Math.PI * 2);
+        ctx.fillStyle = '#18181B';
+        ctx.fill();
+        ctx.restore();
+
+        // Clipped 9×9 pixelated magnifier interior
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(lx, ly, gridRadius - 1, 0, Math.PI * 2);
+        ctx.clip();
+
+        ctx.fillStyle = '#1C1C1E';
+        ctx.fillRect(lx - gridRadius, ly - gridRadius, gridTotal, gridTotal);
+
+        const srcX0 = px - 4;
+        const srcY0 = py - 4;
+        const clampedX0 = Math.max(0, srcX0);
+        const clampedY0 = Math.max(0, srcY0);
+        const clampedX1 = Math.min(doc.width, srcX0 + gridCount);
+        const clampedY1 = Math.min(doc.height, srcY0 + gridCount);
+        if (clampedX1 > clampedX0 && clampedY1 > clampedY0) {
+          ctx.imageSmoothingEnabled = false;
+          const dstX = lx - gridRadius + (clampedX0 - srcX0) * cellSize;
+          const dstY = ly - gridRadius + (clampedY0 - srcY0) * cellSize;
+          ctx.drawImage(
+            afterCanvas,
+            clampedX0,
+            clampedY0,
+            clampedX1 - clampedX0,
+            clampedY1 - clampedY0,
+            dstX,
+            dstY,
+            (clampedX1 - clampedX0) * cellSize,
+            (clampedY1 - clampedY0) * cellSize
+          );
+        }
+
+        // Crisp 9×9 grid hairlines
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
+        ctx.lineWidth = 1;
+        for (let i = 1; i < gridCount; i++) {
+          const gx = Math.round(lx - gridRadius + i * cellSize) + 0.5;
+          const gy = Math.round(ly - gridRadius + i * cellSize) + 0.5;
+          ctx.beginPath();
+          ctx.moveTo(gx, ly - gridRadius);
+          ctx.lineTo(gx, ly + gridRadius);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(lx - gridRadius, gy);
+          ctx.lineTo(lx + gridRadius, gy);
+          ctx.stroke();
+        }
+
+        // Center pixel reticle
+        const cxCell = lx - cellSize / 2;
+        const cyCell = ly - cellSize / 2;
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.75)';
+        ctx.lineWidth = 2.5;
+        ctx.strokeRect(cxCell, cyCell, cellSize, cellSize);
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 1.25;
+        ctx.strokeRect(cxCell, cyCell, cellSize, cellSize);
+        ctx.restore();
+
+        // Outer color-ring bezel
+        ctx.beginPath();
+        ctx.arc(lx, ly, loupeRadius - 2, 0, Math.PI * 2);
+        ctx.strokeStyle = cursorPixelColor?.hex ?? '#0A84FF';
+        ctx.lineWidth = 4;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(lx, ly, loupeRadius, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+        ctx.lineWidth = 1.25;
+        ctx.stroke();
+
+        // Monospace hex + pixel readout below loupe
+        const badgeText = `${cursorPixelColor?.hex ?? '#000000'} · ${px},${py}`;
+        ctx.font = '600 10px "SF Mono", ui-monospace, monospace';
+        const tw = ctx.measureText(badgeText).width + 12;
+        const badgeY = ly + loupeRadius + 14;
+        ctx.fillStyle = 'rgba(20, 20, 24, 0.9)';
+        ctx.beginPath();
+        ctx.roundRect(lx - tw / 2, badgeY - 9, tw, 18, 4);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = '#FFFFFF';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(badgeText, lx, badgeY);
+
+        ctx.restore();
+      }
+    }
+
     ctx.restore();
   }, [
     doc,
@@ -1023,6 +1153,7 @@ export const CanvasWorkspace: React.FC = () => {
     foregroundColor,
     backgroundColor,
     cursorScreen,
+    cursorPixelColor,
     viewportSettings,
     toolOptions,
     getArtboardOrigin,
@@ -2279,6 +2410,32 @@ export const CanvasWorkspace: React.FC = () => {
     setCursorScreen({ x: sx, y: sy });
     setCursorCanvasPos({ x: Math.round(docX), y: Math.round(docY) });
 
+    const px = Math.floor(docX);
+    const py = Math.floor(docY);
+    const sampleSrc = afterCanvasRef.current;
+    if (sampleSrc && px >= 0 && py >= 0 && px < doc.width && py < doc.height) {
+      let scratch = pixelSampleCanvasRef.current;
+      if (!scratch) {
+        scratch = createCanvas(1, 1);
+        pixelSampleCanvasRef.current = scratch;
+      }
+      const sctx = scratch.getContext('2d', { willReadFrequently: true });
+      if (sctx) {
+        sctx.clearRect(0, 0, 1, 1);
+        sctx.drawImage(sampleSrc, px, py, 1, 1, 0, 0, 1, 1);
+        const d = sctx.getImageData(0, 0, 1, 1).data;
+        setCursorPixelColor({
+          r: d[0],
+          g: d[1],
+          b: d[2],
+          a: d[3],
+          hex: rgbaToHex(d[0], d[1], d[2]),
+        });
+      }
+    } else {
+      setCursorPixelColor(null);
+    }
+
     const d = dragRef.current;
     if (d.kind === 'none') return;
 
@@ -2935,6 +3092,7 @@ export const CanvasWorkspace: React.FC = () => {
       onPointerLeave={() => {
         setCursorScreen(null);
         setCursorCanvasPos(null);
+        setCursorPixelColor(null);
       }}
       onDoubleClick={handleDoubleClick}
       onWheel={handleWheel}

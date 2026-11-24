@@ -60,6 +60,7 @@ export const ToolOptionsBar: React.FC = () => {
     foregroundColor,
     backgroundColor,
     setEditingTarget,
+    openModal,
     showToast,
   } = useEditorStore();
 
@@ -429,6 +430,15 @@ export const ToolOptionsBar: React.FC = () => {
                 >
                   Select All
                 </button>
+                <button
+                  type="button"
+                  onClick={() => openModal('colorRange')}
+                  title="Select or mask by sampled color, hue band, or tonal range"
+                  className="px-2 py-0.5 rounded border text-[11px] hover:bg-[var(--lp-hover)] cursor-pointer whitespace-nowrap"
+                  style={{ borderColor: 'var(--lp-border)' }}
+                >
+                  Color Range…
+                </button>
                 <span className="text-[11px] text-[var(--lp-text-secondary)] whitespace-nowrap">
                   {activeTool === 'magic-wand'
                     ? 'Click pixel region to select matching colors'
@@ -437,6 +447,17 @@ export const ToolOptionsBar: React.FC = () => {
                       : 'Drag on canvas to create selection'}
                 </span>
               </div>
+            )}
+            {doc.selection && (
+              <button
+                type="button"
+                onClick={() => openModal('colorRange')}
+                title="Refine or replace selection using Color Range"
+                className="px-2 py-0.5 rounded border text-[11px] hover:bg-[var(--lp-hover)] cursor-pointer whitespace-nowrap ml-1"
+                style={{ borderColor: 'var(--lp-border)' }}
+              >
+                Color Range…
+              </button>
             )}
           </>
         )}

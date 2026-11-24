@@ -32,6 +32,7 @@ export const BottomStatusBar: React.FC = () => {
     documents,
     activeDocumentId,
     cursorCanvasPos,
+    cursorPixelColor,
     setZoom,
     requestFitZoom,
   } = useEditorStore();
@@ -70,6 +71,24 @@ export const BottomStatusBar: React.FC = () => {
               Sel {Math.round(doc.selection.width)}×{Math.round(doc.selection.height)}
             </span>
             <span>·</span>
+          </>
+        )}
+        {cursorPixelColor && (
+          <>
+            <span
+              className="hidden sm:inline-flex items-center gap-1.5"
+              title={`RGBA(${cursorPixelColor.r}, ${cursorPixelColor.g}, ${cursorPixelColor.b}, ${cursorPixelColor.a})`}
+            >
+              <span
+                className="w-2.5 h-2.5 rounded-[2px] border shrink-0"
+                style={{
+                  backgroundColor: cursorPixelColor.hex,
+                  borderColor: 'var(--lp-border-strong)',
+                }}
+              />
+              <span>{cursorPixelColor.hex}</span>
+            </span>
+            <span className="hidden sm:inline">·</span>
           </>
         )}
         <span className="hidden sm:inline w-24 text-right">

@@ -105,6 +105,20 @@ function StudioShell() {
   // Global keyboard shortcuts
   useEffect(() => {
     const onKeyDown = async (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      const key = e.key.toLowerCase();
+
+      if (mod && key === 'k') {
+        e.preventDefault();
+        const state = useEditorStore.getState();
+        if (state.modals.commandPalette) {
+          state.closeModal('commandPalette');
+        } else {
+          state.openModal('commandPalette');
+        }
+        return;
+      }
+
       const target = e.target as HTMLElement | null;
       if (
         target instanceof HTMLInputElement ||
@@ -114,9 +128,6 @@ function StudioShell() {
       ) {
         return;
       }
-
-      const mod = e.metaKey || e.ctrlKey;
-      const key = e.key.toLowerCase();
 
       if (mod && key === 'z') {
         e.preventDefault();
